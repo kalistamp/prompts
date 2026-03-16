@@ -208,6 +208,7 @@ select:focus, input:focus, textarea:focus {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 20px;
+    align-items: start;
 }
 
 .prompt-card {
@@ -269,15 +270,33 @@ select:focus, input:focus, textarea:focus {
     font-size: 0.9rem;
     margin-bottom: 20px;
     flex-grow: 1;
-    display: -webkit-box;
-    -webkit-line-clamp: 4;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+    max-height: 120px;
+    overflow-y: auto;
     white-space: pre-wrap;
     background: var(--bg-color);
     padding: 12px;
     border-radius: 8px;
     border: 1px solid var(--border-color);
+    transition: max-height 0.3s ease;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) transparent;
+}
+
+.card-preview::-webkit-scrollbar {
+    width: 6px;
+}
+
+.card-preview::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.card-preview::-webkit-scrollbar-thumb {
+    background-color: var(--border-color);
+    border-radius: 10px;
+}
+
+.prompt-card:hover .card-preview {
+    max-height: 400px;
 }
 
 .card-footer {
