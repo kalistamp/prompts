@@ -204,19 +204,132 @@ select:focus, input:focus, textarea:focus {
     background: var(--border-color);
 }
 
+/* ─── Category Section (collapsible) ─────────────────────────────────────── */
+
+.prompts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.category-section {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    background: var(--surface-color);
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    transition: box-shadow 0.2s;
+}
+
+.category-section:hover {
+    box-shadow: var(--shadow-md);
+}
+
+.category-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px;
+    cursor: pointer;
+    user-select: none;
+    border: none;
+    background: none;
+    width: 100%;
+    text-align: left;
+    color: var(--text-primary);
+    transition: background 0.15s;
+}
+
+.category-header:hover {
+    background: var(--bg-color);
+}
+
+.category-chevron {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    transition: transform 0.25s ease, color 0.2s;
+}
+
+/* SVG chevron — points right when collapsed */
+.category-chevron svg {
+    width: 14px;
+    height: 14px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    display: block;
+}
+
+/* Rotate to point down when expanded */
+.category-section.open .category-chevron {
+    transform: rotate(90deg);
+    color: var(--primary-color);
+}
+
+.category-header-text {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+}
+
+.category-name {
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--primary-color);
+}
+
+.category-count {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    background: var(--bg-color);
+    padding: 2px 8px;
+    border-radius: 20px;
+    border: 1px solid var(--border-color);
+}
+
+/* ─── Collapsible panel ────────────────────────────────────────────────────── */
+
+.category-body {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.28s ease;
+}
+
+.category-section.open .category-body {
+    grid-template-rows: 1fr;
+}
+
+/* The inner wrapper is required for grid-template-rows collapse trick */
+.category-body-inner {
+    overflow: hidden;
+}
+
 .prompts-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 20px;
     align-items: start;
+    padding: 0 20px 20px 20px;
 }
 
+/* ─── Prompt Cards ────────────────────────────────────────────────────────── */
+
 .prompt-card {
-    background: var(--surface-color);
+    background: var(--bg-color);
     border: 1px solid var(--border-color);
     border-radius: var(--radius);
     padding: 20px;
-    box-shadow: var(--shadow-sm);
     display: flex;
     flex-direction: column;
     transition: transform 0.2s, box-shadow 0.2s;
@@ -273,7 +386,7 @@ select:focus, input:focus, textarea:focus {
     max-height: 120px;
     overflow-y: auto;
     white-space: pre-wrap;
-    background: var(--bg-color);
+    background: var(--surface-color);
     padding: 12px;
     border-radius: 8px;
     border: 1px solid var(--border-color);
@@ -344,6 +457,17 @@ select:focus, input:focus, textarea:focus {
     background: var(--primary-hover);
 }
 
+/* ─── Empty state ─────────────────────────────────────────────────────────── */
+
+.empty-state {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 60px 20px;
+    font-size: 1rem;
+}
+
+/* ─── Modals ──────────────────────────────────────────────────────────────── */
+
 .modal {
     display: none;
     position: fixed;
@@ -386,7 +510,8 @@ select:focus, input:focus, textarea:focus {
     justify-content: flex-end;
 }
 
-/* Toast Notification */
+/* ─── Toast ───────────────────────────────────────────────────────────────── */
+
 .toast {
     position: fixed;
     bottom: 20px;
