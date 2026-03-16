@@ -79,9 +79,17 @@ header h1 {
         position: absolute;
         left: 50%;
         transform: translateX(-50%);
+        pointer-events: none;
+        flex: 0 0 auto;
+        width: auto;
+    }
+    .header-left h1 {
+        pointer-events: auto;
     }
     .header-right {
         margin-left: auto;
+        position: relative;
+        z-index: 1;
     }
 }
 
