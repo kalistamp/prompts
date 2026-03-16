@@ -45,6 +45,11 @@ const categoryList = document.getElementById(‘category-list’);
 // SVG chevron (right-pointing; rotated to down via CSS when open)
 const CHEVRON_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 6 15 12 9 18"/></svg>`;
 
+// Converts a category key into a safe HTML id value
+function slugify(str) {
+return str.replace(/[^a-zA-Z0-9_-]/g, ‘_’);
+}
+
 // Initialize
 function init() {
 initTheme();
@@ -165,7 +170,8 @@ sortedKeys.forEach(categoryKey => {
     const header = document.createElement('button');
     header.className = 'category-header';
     header.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
-    header.setAttribute('aria-controls', `category-body-${CSS.escape(categoryKey)}`);
+    const safeId = `category-body-${slugify(categoryKey)}`;
+    header.setAttribute('aria-controls', safeId);
     header.innerHTML = `
         <span class="category-chevron">${CHEVRON_SVG}</span>
         <span class="category-header-text">
@@ -185,7 +191,7 @@ sortedKeys.forEach(categoryKey => {
     // Collapsible body — uses the grid-template-rows trick for smooth CSS animation
     const body = document.createElement('div');
     body.className = 'category-body';
-    body.id = `category-body-${categoryKey}`;
+    body.id = safeId;
     body.setAttribute('role', 'region');
 
     const bodyInner = document.createElement('div');
