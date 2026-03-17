@@ -53,3 +53,54 @@
                     <textarea id="prompt-text" required rows="6" placeholder="You are an expert..."></textarea>
                 </div>
                 <div class="form-control">
+                    <label>Notes (Optional)</label>
+                    <textarea id="prompt-notes" rows="2" placeholder="Any usage notes..."></textarea>
+                </div>
+                <div class="modal-actions">
+                    <button type="submit" class="btn" id="save-prompt-btn">Save Prompt</button>
+                    <button type="button" class="btn btn-secondary" id="close-prompt-btn">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <header>
+            <div class="header-left">
+                <h1>Prompt Studio</h1>
+            </div>
+            <div class="header-right">
+                <button class="icon-btn" id="theme-toggle" title="Toggle Dark Mode"><i class="fas fa-moon"></i></button>
+                <button class="icon-btn" id="sync-btn" title="Cloud Sync"><i class="fas fa-cloud"></i></button>
+                <button class="icon-btn" id="settings-btn" title="Settings"><i class="fas fa-cog"></i></button>
+            </div>
+        </header>
+
+        <main>
+            <div class="toolbar">
+                <div class="search-bar">
+                    <input type="text" id="search-input" placeholder="Search prompts, tags...">
+                    <button class="clear-search-btn" id="clear-search-btn" title="Clear search"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="filters">
+                    <select id="category-filter">
+                        <option value="">All Categories</option>
+                    </select>
+                    <select id="sort-select">
+                        <option value="date-desc">Newest First</option>
+                        <option value="date-asc">Oldest First</option>
+                        <option value="name-asc">Name (A-Z)</option>
+                        <option value="name-desc">Name (Z-A)</option>
+                    </select>
+                    <button class="btn" id="add-prompt-btn"><i class="fas fa-plus"></i> New Prompt</button>
+                </div>
+            </div>
+
+            <div class="prompts-grid" id="prompts-grid">
+                <!-- Prompts injected here -->
+            </div>
+        </main>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>
