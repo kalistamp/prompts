@@ -204,11 +204,77 @@ select:focus, input:focus, textarea:focus {
     background: var(--border-color);
 }
 
+.category-section {
+    margin-bottom: 20px;
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.category-header {
+    padding: 15px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+    background: var(--surface-color);
+    user-select: none;
+    transition: background 0.2s;
+}
+
+.category-header:hover {
+    background: var(--bg-color);
+}
+
+.category-header h2 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin: 0;
+    flex-grow: 1;
+    color: var(--text-primary);
+}
+
+.category-count {
+    background: var(--border-color);
+    color: var(--text-secondary);
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.arrow-icon {
+    color: var(--text-secondary);
+    transition: transform 0.3s ease;
+    font-size: 1.1rem;
+}
+
+.category-section.expanded .arrow-icon {
+    transform: rotate(90deg);
+}
+
+.category-content {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.3s ease-out;
+}
+
+.category-section.expanded .category-content {
+    grid-template-rows: 1fr;
+}
+
+.category-content-inner {
+    overflow: hidden;
+    min-height: 0;
+}
+
 .prompts-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 20px;
     align-items: start;
+    padding: 0 20px 20px 20px;
 }
 
 .prompt-card {
@@ -241,14 +307,6 @@ select:focus, input:focus, textarea:focus {
     word-break: break-word;
 }
 
-.card-category {
-    font-size: 0.8rem;
-    color: var(--primary-color);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    font-weight: 600;
-}
-
 .card-tags {
     display: flex;
     flex-wrap: wrap;
@@ -272,8 +330,6 @@ select:focus, input:focus, textarea:focus {
     flex-grow: 1;
     max-height: 120px;
     overflow-y: auto;
-
-
     white-space: pre-wrap;
     background: var(--bg-color);
     padding: 12px;
