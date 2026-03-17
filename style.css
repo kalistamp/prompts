@@ -272,6 +272,8 @@ select:focus, input:focus, textarea:focus {
     flex-grow: 1;
     max-height: 120px;
     overflow-y: auto;
+
+
     white-space: pre-wrap;
     background: var(--bg-color);
     padding: 12px;
