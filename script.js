@@ -31,7 +31,7 @@ const promptText = document.getElementById('prompt-text');
 const promptNotes = document.getElementById('prompt-notes');
 const closePromptBtn = document.getElementById('close-prompt-btn');
 
-const promptsContainer = document.getElementById('prompts-container');
+const promptsGrid = document.getElementById('prompts-grid');
 const searchInput = document.getElementById('search-input');
 const clearSearchBtn = document.getElementById('clear-search-btn');
 const categoryFilter = document.getElementById('category-filter');
@@ -115,92 +115,45 @@ function renderPrompts() {
         return 0;
     });
 
-    promptsContainer.innerHTML = '';
+    promptsGrid.innerHTML = '';
     
     if (filtered.length === 0) {
-        promptsContainer.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 40px;">No prompts found.</p>';
+        promptsGrid.innerHTML = '<p style="color: var(--text-secondary); grid-column: 1/-1; text-align: center; padding: 40px;">No prompts found.</p>';
         return;
     }
 
-    // Group by category
-    const grouped = {};
     filtered.forEach(p => {
-        const cat = p.category || 'Uncategorized';
-        if (!grouped[cat]) grouped[cat] = [];
-        grouped[cat].push(p);
-    });
-
-    const sortedCategories = Object.keys(grouped).sort((a, b) => {
-        if (a === 'Uncategorized') return 1;
-        if (b === 'Uncategorized') return -1;
-        return a.localeCompare(b);
-    });
-
-    const isFiltering = searchTerm.length > 0 || category !== '';
-
-    sortedCategories.forEach(cat => {
-        const section = document.createElement('div');
-        section.className = 'category-section';
-        if (isFiltering) {
-            section.classList.add('expanded');
-        }
-
-        const header = document.createElement('div');
-        header.className = 'category-header';
-        header.onclick = () => section.classList.toggle('expanded');
-
-        header.innerHTML = `
-            <i class="fas fa-chevron-right arrow-icon"></i>
-            <h2>${escapeHtml(cat)}</h2>
-            <span class="category-count">${grouped[cat].length}</span>
-        `;
-
-        const content = document.createElement('div');
-        content.className = 'category-content';
-
-        const contentInner = document.createElement('div');
-        contentInner.className = 'category-content-inner';
-
-        const grid = document.createElement('div');
-        grid.className = 'prompts-grid';
-
-        grouped[cat].forEach(p => {
-            const card = document.createElement('div');
-            card.className = 'prompt-card';
-            
-            const tagsHtml = p.tags ? p.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('') : '';
-            
-            card.innerHTML = `
-                <div class="card-header">
+        const card = document.createElement('div');
+        card.className = 'prompt-card';
+        
+        const tagsHtml = p.tags ? p.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('') : '';
+        const categoryHtml = p.category ? `<div class="card-category">${escapeHtml(p.category)}</div>` : '';
+        
+        card.innerHTML = `
+            <div class="card-header">
+                <div>
+                    ${categoryHtml}
                     <div class="card-title">${escapeHtml(p.title)}</div>
                 </div>
-                <div class="card-tags">${tagsHtml}</div>
-                <div class="card-preview">${escapeHtml(p.text)}</div>
-                <div class="card-footer">
-                    <button class="copy-btn" onclick="copyPrompt(${p.id})">
-                        <i class="fas fa-copy"></i> Copy
-                    </button>
-                    <div class="card-actions">
-                        <button class="action-icon" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
-                        <button class="action-icon delete" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
-                    </div>
+            </div>
+            <div class="card-tags">${tagsHtml}</div>
+            <div class="card-preview">${escapeHtml(p.text)}</div>
+            <div class="card-footer">
+                <button class="copy-btn" onclick="copyPrompt(${p.id})">
+                    <i class="fas fa-copy"></i> Copy
+                </button>
+                <div class="card-actions">
+                    <button class="action-icon" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
+                    <button class="action-icon delete" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
                 </div>
-            `;
-            grid.appendChild(card);
-        });
-
-        contentInner.appendChild(grid);
-        content.appendChild(contentInner);
-        section.appendChild(header);
-        section.appendChild(content);
-        promptsContainer.appendChild(section);
+            </div>
+        `;
+        promptsGrid.appendChild(card);
     });
 }
 
 function populateCategories() {
     const categories = new Set(appData.prompts.map(p => p.category).filter(c => c));
-    
-    // Update datalist
     categoryList.innerHTML = '';
     categories.forEach(c => {
         const option = document.createElement('option');
@@ -208,7 +161,6 @@ function populateCategories() {
         categoryList.appendChild(option);
     });
 
-    // Update filter dropdown
     const currentFilter = categoryFilter.value;
     categoryFilter.innerHTML = '<option value="">All Categories</option>';
     categories.forEach(c => {
@@ -253,7 +205,7 @@ window.editPrompt = function(id) {
     promptModal.classList.add('active');
 }
 
-// Event Listeners
+// Listeners
 searchInput.addEventListener('input', () => {
     clearSearchBtn.style.display = searchInput.value.length > 0 ? 'flex' : 'none';
     renderPrompts();
@@ -262,7 +214,6 @@ searchInput.addEventListener('input', () => {
 clearSearchBtn.addEventListener('click', () => {
     searchInput.value = '';
     clearSearchBtn.style.display = 'none';
-    searchInput.focus();
     renderPrompts();
 });
 
@@ -282,11 +233,7 @@ closePromptBtn.addEventListener('click', () => {
 
 promptForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    
-    const tagsArray = promptTags.value.split(',')
-        .map(t => t.trim())
-        .filter(t => t.length > 0);
-
+    const tagsArray = promptTags.value.split(',').map(t => t.trim()).filter(t => t.length > 0);
     const promptData = {
         title: promptTitle.value.trim(),
         category: promptCategory.value.trim(),
@@ -297,18 +244,9 @@ promptForm.addEventListener('submit', (e) => {
     };
 
     if (editState.isEditing) {
-        appData.prompts = appData.prompts.map(p => {
-            if (p.id === editState.id) {
-                return { ...p, ...promptData };
-            }
-            return p;
-        });
+        appData.prompts = appData.prompts.map(p => p.id === editState.id ? { ...p, ...promptData } : p);
     } else {
-        appData.prompts.push({
-            ...promptData,
-            id: Date.now(),
-            createdAt: Date.now()
-        });
+        appData.prompts.push({ ...promptData, id: Date.now(), createdAt: Date.now() });
     }
 
     saveLocalData();
@@ -323,32 +261,22 @@ settingsBtn.addEventListener('click', () => {
     settingsModal.classList.add('active');
 });
 
-closeSettingsBtn.addEventListener('click', () => {
-    settingsModal.classList.remove('active');
-});
+closeSettingsBtn.addEventListener('click', () => settingsModal.classList.remove('active'));
 
 saveSettingsBtn.addEventListener('click', () => {
     GITHUB_TOKEN = githubTokenInput.value.trim();
     GIST_ID = gistIdInput.value.trim();
-    
     localStorage.setItem('promptGithubToken', GITHUB_TOKEN);
     localStorage.setItem('promptGistId', GIST_ID);
-    
     settingsModal.classList.remove('active');
-    
-    if (GITHUB_TOKEN && GIST_ID) {
-        syncFromCloud();
-    }
+    if (GITHUB_TOKEN && GIST_ID) syncFromCloud();
 });
 
-syncBtn.addEventListener('click', () => {
-    syncFromCloud();
-});
+syncBtn.addEventListener('click', syncFromCloud);
 
 let syncTimeout;
 function saveToGist() {
     if (!GITHUB_TOKEN || !GIST_ID) return;
-    
     clearTimeout(syncTimeout);
     syncTimeout = setTimeout(async () => {
         syncBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
@@ -360,92 +288,51 @@ function saveToGist() {
                     'Accept': 'application/vnd.github.v3+json',
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    files: {
-                        [GIST_FILENAME]: {
-                            content: JSON.stringify(appData, null, 2)
-                        }
-                    }
-                })
+                body: JSON.stringify({ files: { [GIST_FILENAME]: { content: JSON.stringify(appData, null, 2) } } })
             });
-            
-            if (!response.ok) throw new Error(`GitHub API Error: ${response.status}`);
-            
+            if (!response.ok) throw new Error();
             syncBtn.innerHTML = '<i class="fas fa-check"></i>';
             setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 2000);
         } catch (error) {
-            console.error("Error saving to Gist:", error);
             syncBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
-            setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 3000);
         }
     }, 1000);
 }
 
 async function syncFromCloud() {
-    if (!GITHUB_TOKEN || !GIST_ID) {
-        showToast("Please configure sync settings first.");
-        return;
-    }
-    
+    if (!GITHUB_TOKEN || !GIST_ID) return;
     syncBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-    
     try {
         const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
-            headers: {
-                'Authorization': `token ${GITHUB_TOKEN}`,
-                'Accept': 'application/vnd.github.v3+json'
-            },
+            headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' },
             cache: 'no-store'
         });
-        
-        if (!response.ok) throw new Error(`GitHub API Error: ${response.status}`);
-        
         const gist = await response.json();
-        
         if (gist.files && gist.files[GIST_FILENAME]) {
-            const content = gist.files[GIST_FILENAME].content;
-            const cloudData = JSON.parse(content);
-            
-            if (!cloudData.lastModified) {
-                // Handle legacy or empty
-                if (appData.prompts.length > 0) saveToGist();
+            const cloudData = JSON.parse(gist.files[GIST_FILENAME].content);
+            if (cloudData.lastModified > appData.lastModified) {
+                appData = cloudData;
+                localStorage.setItem('promptManagerData', JSON.stringify(appData));
+                renderPrompts();
+                populateCategories();
+                showToast("Synced from cloud.");
+            } else if (appData.lastModified > cloudData.lastModified) {
+                saveToGist();
+                showToast("Synced to cloud.");
             } else {
-                // Compare timestamps
-                if (cloudData.lastModified > appData.lastModified) {
-                    appData = cloudData;
-                    localStorage.setItem('promptManagerData', JSON.stringify(appData));
-                    renderPrompts();
-                    populateCategories();
-                    showToast("Synced from cloud.");
-                } else if (appData.lastModified > cloudData.lastModified) {
-                    saveToGist();
-                    showToast("Synced to cloud.");
-                } else {
-                    showToast("Already up to date.");
-                }
+                showToast("Already up to date.");
             }
-            
-            syncBtn.innerHTML = '<i class="fas fa-cloud"></i>';
-        } else {
-            saveToGist();
         }
+        syncBtn.innerHTML = '<i class="fas fa-cloud"></i>';
     } catch (error) {
-        console.error("Error loading from Gist:", error);
         syncBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
-        setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 3000);
-        showToast("Sync failed. Check credentials.");
+        showToast("Sync failed.");
     }
 }
 
 // Utils
 function escapeHtml(unsafe) {
-    if (!unsafe) return '';
-    return unsafe
-         .replace(/&/g, "&amp;")
-         .replace(/</g, "&lt;")
-         .replace(/>/g, "&gt;")
-         .replace(/"/g, "&quot;")
-         .replace(/'/g, "&#039;");
+    return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
 function showToast(message) {
@@ -461,5 +348,4 @@ function showToast(message) {
     setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
-// Run
 init();
