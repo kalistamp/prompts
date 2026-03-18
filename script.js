@@ -154,6 +154,8 @@ function renderPrompts() {
 
 function populateCategories() {
     const categories = new Set(appData.prompts.map(p => p.category).filter(c => c));
+    
+    // Update datalist
     categoryList.innerHTML = '';
     categories.forEach(c => {
         const option = document.createElement('option');
@@ -161,6 +163,7 @@ function populateCategories() {
         categoryList.appendChild(option);
     });
 
+    // Update filter dropdown
     const currentFilter = categoryFilter.value;
     categoryFilter.innerHTML = '<option value="">All Categories</option>';
     categories.forEach(c => {
@@ -205,7 +208,7 @@ window.editPrompt = function(id) {
     promptModal.classList.add('active');
 }
 
-// Listeners
+// Event Listeners
 searchInput.addEventListener('input', () => {
     clearSearchBtn.style.display = searchInput.value.length > 0 ? 'flex' : 'none';
     renderPrompts();
@@ -214,6 +217,7 @@ searchInput.addEventListener('input', () => {
 clearSearchBtn.addEventListener('click', () => {
     searchInput.value = '';
     clearSearchBtn.style.display = 'none';
+    searchInput.focus();
     renderPrompts();
 });
 
@@ -233,7 +237,11 @@ closePromptBtn.addEventListener('click', () => {
 
 promptForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    const tagsArray = promptTags.value.split(',').map(t => t.trim()).filter(t => t.length > 0);
+    
+    const tagsArray = promptTags.value.split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
+
     const promptData = {
         title: promptTitle.value.trim(),
         category: promptCategory.value.trim(),
@@ -244,9 +252,18 @@ promptForm.addEventListener('submit', (e) => {
     };
 
     if (editState.isEditing) {
-        appData.prompts = appData.prompts.map(p => p.id === editState.id ? { ...p, ...promptData } : p);
+        appData.prompts = appData.prompts.map(p => {
+            if (p.id === editState.id) {
+                return { ...p, ...promptData };
+            }
+            return p;
+        });
     } else {
-        appData.prompts.push({ ...promptData, id: Date.now(), createdAt: Date.now() });
+        appData.prompts.push({
+            ...promptData,
+            id: Date.now(),
+            createdAt: Date.now()
+        });
     }
 
     saveLocalData();
@@ -261,22 +278,32 @@ settingsBtn.addEventListener('click', () => {
     settingsModal.classList.add('active');
 });
 
-closeSettingsBtn.addEventListener('click', () => settingsModal.classList.remove('active'));
+closeSettingsBtn.addEventListener('click', () => {
+    settingsModal.classList.remove('active');
+});
 
 saveSettingsBtn.addEventListener('click', () => {
     GITHUB_TOKEN = githubTokenInput.value.trim();
     GIST_ID = gistIdInput.value.trim();
+    
     localStorage.setItem('promptGithubToken', GITHUB_TOKEN);
     localStorage.setItem('promptGistId', GIST_ID);
+    
     settingsModal.classList.remove('active');
-    if (GITHUB_TOKEN && GIST_ID) syncFromCloud();
+    
+    if (GITHUB_TOKEN && GIST_ID) {
+        syncFromCloud();
+    }
 });
 
-syncBtn.addEventListener('click', syncFromCloud);
+syncBtn.addEventListener('click', () => {
+    syncFromCloud();
+});
 
 let syncTimeout;
 function saveToGist() {
     if (!GITHUB_TOKEN || !GIST_ID) return;
+    
     clearTimeout(syncTimeout);
     syncTimeout = setTimeout(async () => {
         syncBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
@@ -288,51 +315,92 @@ function saveToGist() {
                     'Accept': 'application/vnd.github.v3+json',
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ files: { [GIST_FILENAME]: { content: JSON.stringify(appData, null, 2) } } })
+                body: JSON.stringify({
+                    files: {
+                        [GIST_FILENAME]: {
+                            content: JSON.stringify(appData, null, 2)
+                        }
+                    }
+                })
             });
-            if (!response.ok) throw new Error();
+            
+            if (!response.ok) throw new Error(`GitHub API Error: ${response.status}`);
+            
             syncBtn.innerHTML = '<i class="fas fa-check"></i>';
             setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 2000);
         } catch (error) {
+            console.error("Error saving to Gist:", error);
             syncBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
+            setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 3000);
         }
     }, 1000);
 }
 
 async function syncFromCloud() {
-    if (!GITHUB_TOKEN || !GIST_ID) return;
+    if (!GITHUB_TOKEN || !GIST_ID) {
+        showToast("Please configure sync settings first.");
+        return;
+    }
+    
     syncBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    
     try {
         const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
-            headers: { 'Authorization': `token ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' },
+            headers: {
+                'Authorization': `token ${GITHUB_TOKEN}`,
+                'Accept': 'application/vnd.github.v3+json'
+            },
             cache: 'no-store'
         });
+        
+        if (!response.ok) throw new Error(`GitHub API Error: ${response.status}`);
+        
         const gist = await response.json();
+        
         if (gist.files && gist.files[GIST_FILENAME]) {
-            const cloudData = JSON.parse(gist.files[GIST_FILENAME].content);
-            if (cloudData.lastModified > appData.lastModified) {
-                appData = cloudData;
-                localStorage.setItem('promptManagerData', JSON.stringify(appData));
-                renderPrompts();
-                populateCategories();
-                showToast("Synced from cloud.");
-            } else if (appData.lastModified > cloudData.lastModified) {
-                saveToGist();
-                showToast("Synced to cloud.");
+            const content = gist.files[GIST_FILENAME].content;
+            const cloudData = JSON.parse(content);
+            
+            if (!cloudData.lastModified) {
+                // Handle legacy or empty
+                if (appData.prompts.length > 0) saveToGist();
             } else {
-                showToast("Already up to date.");
+                // Compare timestamps
+                if (cloudData.lastModified > appData.lastModified) {
+                    appData = cloudData;
+                    localStorage.setItem('promptManagerData', JSON.stringify(appData));
+                    renderPrompts();
+                    populateCategories();
+                    showToast("Synced from cloud.");
+                } else if (appData.lastModified > cloudData.lastModified) {
+                    saveToGist();
+                    showToast("Synced to cloud.");
+                } else {
+                    showToast("Already up to date.");
+                }
             }
+            
+            syncBtn.innerHTML = '<i class="fas fa-cloud"></i>';
+        } else {
+            saveToGist();
         }
-        syncBtn.innerHTML = '<i class="fas fa-cloud"></i>';
     } catch (error) {
+        console.error("Error loading from Gist:", error);
         syncBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
-        showToast("Sync failed.");
+        setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 3000);
+        showToast("Sync failed. Check credentials.");
     }
 }
 
 // Utils
 function escapeHtml(unsafe) {
-    return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    if (!unsafe) return '';
+    return unsafe
+         .replace(/&/g, "&amp;")
+         .replace(/</g, "&lt;")
+         .replace(/>/g, "&gt;")
+         .replace(/"/g, "&quot;")
+         .replace(/'/g, "&#039;");
 }
 
 function showToast(message) {
@@ -348,4 +416,5 @@ function showToast(message) {
     setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
+// Run
 init();
