@@ -31,7 +31,7 @@ const promptText = document.getElementById('prompt-text');
 const promptNotes = document.getElementById('prompt-notes');
 const closePromptBtn = document.getElementById('close-prompt-btn');
 
-const promptsGrid = document.getElementById('prompts-grid');
+const promptsContainer = document.getElementById('prompts-container');
 const searchInput = document.getElementById('search-input');
 const clearSearchBtn = document.getElementById('clear-search-btn');
 const categoryFilter = document.getElementById('category-filter');
@@ -115,40 +115,85 @@ function renderPrompts() {
         return 0;
     });
 
-    promptsGrid.innerHTML = '';
+    promptsContainer.innerHTML = '';
     
     if (filtered.length === 0) {
-        promptsGrid.innerHTML = '<p style="color: var(--text-secondary); grid-column: 1/-1; text-align: center; padding: 40px;">No prompts found.</p>';
+        promptsContainer.innerHTML = '<p style="color: var(--text-secondary); text-align: center; padding: 40px;">No prompts found.</p>';
         return;
     }
 
+    // Group by category
+    const grouped = {};
     filtered.forEach(p => {
-        const card = document.createElement('div');
-        card.className = 'prompt-card';
-        
-        const tagsHtml = p.tags ? p.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('') : '';
-        const categoryHtml = p.category ? `<div class="card-category">${escapeHtml(p.category)}</div>` : '';
-        
-        card.innerHTML = `
-            <div class="card-header">
-                <div>
-                    ${categoryHtml}
+        const cat = p.category || 'Uncategorized';
+        if (!grouped[cat]) grouped[cat] = [];
+        grouped[cat].push(p);
+    });
+
+    const sortedCategories = Object.keys(grouped).sort((a, b) => {
+        if (a === 'Uncategorized') return 1;
+        if (b === 'Uncategorized') return -1;
+        return a.localeCompare(b);
+    });
+
+    const isFiltering = searchTerm.length > 0 || category !== '';
+
+    sortedCategories.forEach(cat => {
+        const section = document.createElement('div');
+        section.className = 'category-section';
+        if (isFiltering) {
+            section.classList.add('expanded');
+        }
+
+        const header = document.createElement('div');
+        header.className = 'category-header';
+        header.onclick = () => section.classList.toggle('expanded');
+
+        header.innerHTML = `
+            <i class="fas fa-chevron-right arrow-icon"></i>
+            <h2>${escapeHtml(cat)}</h2>
+            <span class="category-count">${grouped[cat].length}</span>
+        `;
+
+        const content = document.createElement('div');
+        content.className = 'category-content';
+
+        const contentInner = document.createElement('div');
+        contentInner.className = 'category-content-inner';
+
+        const grid = document.createElement('div');
+        grid.className = 'prompts-grid';
+
+        grouped[cat].forEach(p => {
+            const card = document.createElement('div');
+            card.className = 'prompt-card';
+            
+            const tagsHtml = p.tags ? p.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('') : '';
+            
+            card.innerHTML = `
+                <div class="card-header">
                     <div class="card-title">${escapeHtml(p.title)}</div>
                 </div>
-            </div>
-            <div class="card-tags">${tagsHtml}</div>
-            <div class="card-preview">${escapeHtml(p.text)}</div>
-            <div class="card-footer">
-                <button class="copy-btn" onclick="copyPrompt(${p.id})">
-                    <i class="fas fa-copy"></i> Copy
-                </button>
-                <div class="card-actions">
-                    <button class="action-icon" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
-                    <button class="action-icon delete" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
+                <div class="card-tags">${tagsHtml}</div>
+                <div class="card-preview">${escapeHtml(p.text)}</div>
+                <div class="card-footer">
+                    <button class="copy-btn" onclick="copyPrompt(${p.id})">
+                        <i class="fas fa-copy"></i> Copy
+                    </button>
+                    <div class="card-actions">
+                        <button class="action-icon" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
+                        <button class="action-icon delete" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
+                    </div>
                 </div>
-            </div>
-        `;
-        promptsGrid.appendChild(card);
+            `;
+            grid.appendChild(card);
+        });
+
+        contentInner.appendChild(grid);
+        content.appendChild(contentInner);
+        section.appendChild(header);
+        section.appendChild(content);
+        promptsContainer.appendChild(section);
     });
 }
 
