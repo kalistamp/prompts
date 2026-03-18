@@ -3,18 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LLM Prompt Manager</title>
+    <title>Prompt Studio | Manage Your LLM Prompts</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
-    <!-- Settings Modal -->
     <div id="settings-modal" class="modal">
         <div class="modal-content">
             <h2><i class="fas fa-cog"></i> Cloud Sync Setup</h2>
-            <p class="modal-desc">Enter your GitHub credentials to enable cloud syncing. Your token is stored locally. <strong>Warning: Never share your Personal Access Token.</strong></p>
+            <p class="modal-desc">Enter your GitHub credentials to enable cloud syncing. Your token is stored locally.</p>
             <div class="form-control">
-                <label>GitHub Personal Access Token (with 'gist' scope)</label>
+                <label>GitHub Personal Access Token</label>
                 <input type="password" id="github-token-input" placeholder="ghp_...">
             </div>
             <div class="form-control">
@@ -28,7 +27,6 @@
         </div>
     </div>
 
-    <!-- Prompt Modal -->
     <div id="prompt-modal" class="modal">
         <div class="modal-content modal-large">
             <h2 id="prompt-modal-title">Add New Prompt</h2>
@@ -50,7 +48,7 @@
                 </div>
                 <div class="form-control">
                     <label>Prompt Text *</label>
-                    <textarea id="prompt-text" required rows="6" placeholder="You are an expert..."></textarea>
+                    <textarea id="prompt-text" required rows="8" placeholder="You are an expert..."></textarea>
                 </div>
                 <div class="form-control">
                     <label>Notes (Optional)</label>
@@ -80,7 +78,7 @@
             <div class="toolbar">
                 <div class="search-bar">
                     <input type="text" id="search-input" placeholder="Search prompts, tags...">
-                    <button class="clear-search-btn" id="clear-search-btn" title="Clear search"><i class="fas fa-times"></i></button>
+                    <button class="clear-search-btn" id="clear-search-btn"><i class="fas fa-times"></i></button>
                 </div>
                 <div class="filters">
                     <select id="category-filter">
@@ -90,15 +88,12 @@
                         <option value="date-desc">Newest First</option>
                         <option value="date-asc">Oldest First</option>
                         <option value="name-asc">Name (A-Z)</option>
-                        <option value="name-desc">Name (Z-A)</option>
                     </select>
                     <button class="btn" id="add-prompt-btn"><i class="fas fa-plus"></i> New Prompt</button>
                 </div>
             </div>
 
-            <div id="prompts-container">
-                <!-- Category sections injected here -->
-            </div>
+            <div class="prompts-grid" id="prompts-grid"></div>
         </main>
     </div>
     <script src="script.js"></script>
