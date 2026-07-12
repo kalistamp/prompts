@@ -295,12 +295,13 @@ select:focus, input:focus, textarea:focus {
 
 .card-header {
     display: flex;
-    justify-content: space-between;
     align-items: flex-start;
+    gap: 10px;
     margin-bottom: 10px;
 }
 
 .card-title {
+    flex: 1;
     font-size: 1.1rem;
     font-weight: 600;
     margin-bottom: 5px;
@@ -326,10 +327,8 @@ select:focus, input:focus, textarea:focus {
 .card-preview {
     color: var(--text-secondary);
     font-size: 0.9rem;
-    margin-bottom: 20px;
+    margin-bottom: 10px;
     flex-grow: 1;
-    max-height: 120px;
-    overflow-y: auto;
     white-space: pre-wrap;
     background: var(--bg-color);
     padding: 12px;
@@ -338,6 +337,16 @@ select:focus, input:focus, textarea:focus {
     transition: max-height 0.3s ease;
     scrollbar-width: thin;
     scrollbar-color: var(--border-color) transparent;
+}
+
+.card-preview.collapsed {
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.card-preview.expanded {
+    max-height: 600px;
+    overflow-y: auto;
 }
 
 .card-preview::-webkit-scrollbar {
@@ -353,8 +362,24 @@ select:focus, input:focus, textarea:focus {
     border-radius: 10px;
 }
 
-.prompt-card:hover .card-preview {
-    max-height: 400px;
+/* Manual expand/collapse toggle (replaces the old hover behavior) */
+.preview-toggle {
+    background: none;
+    border: none;
+    color: var(--primary-color);
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 4px 0;
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+}
+
+.preview-toggle:hover {
+    text-decoration: underline;
 }
 
 .card-footer {
@@ -464,4 +489,207 @@ select:focus, input:focus, textarea:focus {
 .toast.show {
     transform: translateY(0);
     opacity: 1;
+}
+
+/* Empty state */
+.empty-state {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 40px;
+}
+
+/* View Switcher */
+.view-switcher {
+    display: flex;
+    gap: 4px;
+    background: var(--surface-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 4px;
+}
+
+.view-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    width: 34px;
+    height: 34px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.95rem;
+    transition: all 0.2s;
+}
+
+.view-btn:hover {
+    color: var(--primary-color);
+    background: var(--bg-color);
+}
+
+.view-btn.active {
+    background: var(--primary-color);
+    color: #fff;
+}
+
+/* Reorder hint (shown when Custom Order sort is active) */
+.reorder-hint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--surface-color);
+    border: 1px dashed var(--border-color);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    margin-bottom: 20px;
+}
+
+/* Drag and drop (shared across Large Icons / List / Details) */
+.drag-handle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    cursor: grab;
+    width: 20px;
+    flex-shrink: 0;
+}
+
+.drag-handle:active {
+    cursor: grabbing;
+}
+
+.drag-handle-hidden {
+    visibility: hidden;
+}
+
+.dragging {
+    opacity: 0.4;
+}
+
+.drag-over-above {
+    box-shadow: inset 0 2px 0 0 var(--primary-color);
+}
+
+.drag-over-below {
+    box-shadow: inset 0 -2px 0 0 var(--primary-color);
+}
+
+.action-icon:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* List & Details views */
+.prompts-list,
+.prompts-table {
+    padding: 0 20px 20px 20px;
+}
+
+.prompt-row,
+.prompt-detail-row {
+    display: grid;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.prompt-row {
+    grid-template-columns: 24px 28px 1fr 200px auto;
+}
+
+.prompt-detail-row {
+    grid-template-columns: 24px 28px 1fr 200px 110px auto;
+}
+
+.prompt-row:last-child,
+.prompt-detail-row:last-child {
+    border-bottom: none;
+}
+
+.prompt-detail-header {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.row-expand-toggle {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    flex-shrink: 0;
+    transition: all 0.2s;
+}
+
+.row-expand-toggle:hover {
+    color: var(--primary-color);
+    background: var(--bg-color);
+}
+
+.row-title {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.row-tags {
+    display: flex;
+    gap: 4px;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.row-updated {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+.row-actions {
+    display: flex;
+    gap: 4px;
+    justify-content: flex-end;
+}
+
+.row-preview {
+    grid-column: 1 / -1;
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+@media (max-width: 640px) {
+    .prompt-row {
+        grid-template-columns: 20px 24px 1fr auto;
+    }
+    .prompt-detail-row {
+        grid-template-columns: 20px 24px 1fr auto;
+    }
+    .row-tags,
+    .row-updated {
+        display: none;
+    }
 }
