@@ -4,14 +4,27 @@
     --text-primary: #0f172a;
     --text-secondary: #64748b;
     --border-color: #e2e8f0;
-    --primary-color: #3b82f6;
-    --primary-hover: #2563eb;
+    /* Primary = filled-button colour. Kept deep enough for WCAG-safe white text
+       (white on #0284c7 ≈ 4.1:1, an improvement over the old #3b82f6 ≈ 3.7:1). */
+    --primary-color: #0284c7;
+    --primary-hover: #0369a1;
+    /* Accent = bright electric cyan for stripes, focus rings, icon hovers, glows.
+       Used only where it sits on a surface/border, never behind white text. */
+    --accent: #38bdf8;
+    --accent-glow: rgba(56, 189, 248, 0.35);
     --danger-color: #ef4444;
     --danger-hover: #dc2626;
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    /* Layered, card-specific shadows for tactile depth (separate from the global
+       shadow tokens so modals/toasts are untouched). */
+    --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.05);
+    --card-shadow-hover: 0 2px 4px rgba(0, 0, 0, 0.06), 0 14px 30px rgba(0, 0, 0, 0.10);
+    /* Frosted sticky-header background — theme-aware so light mode stays light. */
+    --header-bg: rgba(255, 255, 255, 0.75);
     --radius: 12px;
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 [data-theme="dark"] {
@@ -20,10 +33,15 @@
     --text-primary: #f8fafc;
     --text-secondary: #94a3b8;
     --border-color: #334155;
-    --primary-color: #3b82f6;
-    --primary-hover: #60a5fa;
+    --primary-color: #0284c7;
+    --primary-hover: #0369a1;
+    --accent: #38bdf8;
+    --accent-glow: rgba(56, 189, 248, 0.5);
     --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+    --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.35);
+    --card-shadow-hover: 0 2px 6px rgba(0, 0, 0, 0.5), 0 16px 34px rgba(0, 0, 0, 0.55);
+    --header-bg: rgba(15, 23, 42, 0.8);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -36,6 +54,9 @@ body {
     transition: background-color 0.3s, color 0.3s;
 }
 
+/* Tighter, editorial letter-spacing on headings (h1 already carries this). */
+h2 { letter-spacing: -0.03em; }
+
 .app-container {
     max-width: 1200px;
     margin: 0 auto;
@@ -46,10 +67,18 @@ header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 40px;
-    padding-bottom: 20px;
+    /* Bleed to the container's padding edges so the frosted bar spans full width. */
+    margin: 0 -20px 40px -20px;
+    padding: 12px 20px 20px 20px;
     border-bottom: 1px solid var(--border-color);
-    position: relative;
+    /* Sticky (was relative). Sticky is still a positioned ancestor, so the
+       absolutely-centered .header-left below keeps working exactly as before. */
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: var(--header-bg);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    backdrop-filter: blur(12px) saturate(140%);
     flex-wrap: wrap;
     gap: 20px;
 }
@@ -100,8 +129,9 @@ header h1 {
 }
 
 .icon-btn:hover {
-    color: var(--primary-color);
-    border-color: var(--primary-color);
+    color: var(--accent);
+    border-color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
 }
 
 .toolbar {
@@ -172,9 +202,11 @@ select, input[type="text"], input[type="password"], textarea {
     font-family: inherit;
 }
 
+/* Neon focus ring — accent outline plus a soft glow. */
 select:focus, input:focus, textarea:focus {
-    outline: 2px solid var(--primary-color);
+    outline: 2px solid var(--accent);
     border-color: transparent;
+    box-shadow: 0 0 0 4px var(--accent-glow);
 }
 
 .btn {
@@ -189,10 +221,16 @@ select:focus, input:focus, textarea:focus {
     display: flex;
     align-items: center;
     gap: 8px;
-    transition: background 0.2s;
+    transition: background 0.2s, box-shadow 0.2s;
 }
 
 .btn:hover { background: var(--primary-hover); }
+
+/* Glow only on primary (filled) buttons — not the neutral secondary/cancel. */
+.btn:not(.btn-secondary):hover,
+.copy-btn:hover {
+    box-shadow: 0 0 16px var(--accent-glow);
+}
 
 .btn-secondary {
     background: var(--surface-color);
@@ -202,6 +240,18 @@ select:focus, input:focus, textarea:focus {
 
 .btn-secondary:hover {
     background: var(--border-color);
+}
+
+/* Keyboard-visible focus for all icon/text buttons (previously invisible). */
+.btn:focus-visible,
+.copy-btn:focus-visible,
+.icon-btn:focus-visible,
+.tool-btn:focus-visible,
+.view-btn:focus-visible,
+.preview-toggle:focus-visible,
+.drag-handle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
 }
 
 .category-section {
@@ -242,6 +292,7 @@ select:focus, input:focus, textarea:focus {
     border-radius: 12px;
     font-size: 0.85rem;
     font-weight: 600;
+    font-family: var(--font-mono);
 }
 
 .arrow-icon {
@@ -269,144 +320,233 @@ select:focus, input:focus, textarea:focus {
     min-height: 0;
 }
 
+/* ===========================================================================
+   Prompt items — one unified component for all three views.
+   The container class (view-large / view-list / view-compact) controls density
+   and how much of the body shows when collapsed.
+   =========================================================================== */
 .prompts-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-    gap: 20px;
-    align-items: start;
+    gap: 16px;
     padding: 0 20px 20px 20px;
+    align-items: start;
 }
 
-.prompt-card {
+.view-large {
+    /* 280px min (was 300px) → edge-to-edge breathing room on small phones. */
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.view-list,
+.view-compact {
+    grid-template-columns: 1fr;
+    gap: 10px;
+}
+
+.prompt-item {
+    position: relative; /* anchors the ::before accent stripe */
     background: var(--surface-color);
     border: 1px solid var(--border-color);
     border-radius: var(--radius);
-    padding: 20px;
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--card-shadow);
+    padding: 16px;
     display: flex;
     flex-direction: column;
-    transition: transform 0.2s, box-shadow 0.2s;
+    gap: 10px;
+    transition: box-shadow 0.2s, border-color 0.2s, transform 0.2s;
 }
 
-.prompt-card:hover {
+/* Left accent stripe tied to the accent colour — subtle at rest, full on touch. */
+.prompt-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--accent);
+    border-radius: var(--radius) 0 0 var(--radius);
+    opacity: 0.55;
+    transition: opacity 0.2s;
+    pointer-events: none;
+}
+
+/* Tactile depth: lifts on hover (desktop) and on press (:active, mobile). */
+.prompt-item:hover,
+.prompt-item:active {
+    box-shadow: var(--card-shadow-hover);
+}
+
+.prompt-item:hover::before,
+.prompt-item:active::before {
+    opacity: 1;
+}
+
+/* Large cards get the extra vertical lift; dense rows just deepen the shadow. */
+.view-large .prompt-item:hover {
     transform: translateY(-2px);
-    box-shadow: var(--shadow-md);
 }
 
-.card-header {
+.view-compact .prompt-item {
+    padding: 10px 14px;
+    gap: 6px;
+}
+
+.item-top {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
-    margin-bottom: 10px;
+    gap: 8px;
 }
 
-.card-title {
+.item-head {
     flex: 1;
-    font-size: 1.1rem;
-    font-weight: 600;
-    margin-bottom: 5px;
-    word-break: break-word;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 
-.card-tags {
+.item-title {
+    font-weight: 600;
+    font-size: 1.05rem;
+    line-height: 1.3;
+    word-break: break-word;
+    color: var(--text-primary);
+}
+
+.view-compact .item-title {
+    font-size: 0.98rem;
+}
+
+.item-meta {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    white-space: nowrap;
+}
+
+.item-tools {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.tool-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.95rem;
+    transition: background 0.15s, color 0.15s;
+}
+
+.tool-btn:hover {
+    background: var(--bg-color);
+    color: var(--accent);
+}
+
+.tool-btn.danger:hover {
+    color: var(--danger-color);
+}
+
+.tool-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.item-tags {
     display: flex;
     flex-wrap: wrap;
-    gap: 5px;
-    margin-bottom: 15px;
+    gap: 6px;
 }
 
+/* Tag chips — previously emitted by JS with no styling at all. Monospaced to
+   signal a developer tool, per the typography brief. */
 .tag {
-    background: var(--border-color);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.4;
     color: var(--text-secondary);
-    padding: 4px 10px;
-    border-radius: 12px;
-    font-size: 0.75rem;
-    font-weight: 500;
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    padding: 2px 8px;
+    border-radius: 6px;
+    white-space: nowrap;
 }
 
-.card-preview {
-    color: var(--text-secondary);
-    font-size: 0.9rem;
-    margin-bottom: 10px;
-    flex-grow: 1;
-    white-space: pre-wrap;
+.prompt-body {
     background: var(--bg-color);
-    padding: 12px;
-    border-radius: 8px;
     border: 1px solid var(--border-color);
-    transition: max-height 0.3s ease;
+    border-radius: 8px;
+    padding: 12px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
     scrollbar-width: thin;
     scrollbar-color: var(--border-color) transparent;
 }
 
-.card-preview.collapsed {
-    max-height: 120px;
+.prompt-body::-webkit-scrollbar { width: 6px; }
+.prompt-body::-webkit-scrollbar-track { background: transparent; }
+.prompt-body::-webkit-scrollbar-thumb { background-color: var(--border-color); border-radius: 10px; }
+
+/* Collapsed clamps: list shows ~3 lines, compact ~1 line. */
+.view-list .prompt-item:not(.is-expanded) .prompt-body {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.view-compact .prompt-item:not(.is-expanded) .prompt-body {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    padding: 8px 10px;
+}
+
+/* Expanded bodies cap their height and scroll so one huge prompt can't
+   dominate the screen. */
+.prompt-item.is-expanded .prompt-body {
+    max-height: 460px;
     overflow-y: auto;
 }
 
-.card-preview.expanded {
-    max-height: 600px;
-    overflow-y: auto;
-}
-
-.card-preview::-webkit-scrollbar {
-    width: 6px;
-}
-
-.card-preview::-webkit-scrollbar-track {
-    background: transparent;
-}
-
-.card-preview::-webkit-scrollbar-thumb {
-    background-color: var(--border-color);
-    border-radius: 10px;
-}
-
-/* Manual expand/collapse toggle (replaces the old hover behavior) */
 .preview-toggle {
+    align-self: flex-start;
     background: none;
     border: none;
-    color: var(--primary-color);
+    color: var(--accent);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     font-weight: 600;
-    padding: 4px 0;
-    margin-bottom: 15px;
-    display: flex;
+    padding: 4px 2px;
+    display: inline-flex;
     align-items: center;
-    gap: 4px;
-    align-self: flex-start;
+    gap: 6px;
 }
 
 .preview-toggle:hover {
     text-decoration: underline;
 }
 
-.card-footer {
+.item-footer {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-top: 1px solid var(--border-color);
-    padding-top: 15px;
-}
-
-.card-actions {
-    display: flex;
     gap: 10px;
+    flex-wrap: wrap;
 }
-
-.action-icon {
-    color: var(--text-secondary);
-    cursor: pointer;
-    background: none;
-    border: none;
-    font-size: 1.1rem;
-    transition: color 0.2s;
-    padding: 5px;
-}
-
-.action-icon:hover { color: var(--primary-color); }
-.action-icon.delete:hover { color: var(--danger-color); }
 
 .copy-btn {
     background: var(--primary-color);
@@ -420,11 +560,52 @@ select:focus, input:focus, textarea:focus {
     display: flex;
     align-items: center;
     gap: 6px;
-    transition: all 0.2s;
+    transition: background 0.2s, box-shadow 0.2s;
 }
 
 .copy-btn:hover {
     background: var(--primary-hover);
+}
+
+/* Drag handle + drag feedback (pointer-events based, works on touch) */
+.drag-handle {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    width: 32px;
+    height: 36px;
+    border-radius: 8px;
+    cursor: grab;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    touch-action: none; /* stop the page scrolling while dragging on touch */
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none; /* suppress iOS long-press callout */
+}
+
+.drag-handle:hover {
+    color: var(--accent);
+    background: var(--bg-color);
+}
+
+.drag-handle:active {
+    cursor: grabbing;
+}
+
+.prompt-item.dragging {
+    opacity: 0.5;
+    pointer-events: none; /* let elementFromPoint see the item beneath */
+    box-shadow: var(--card-shadow-hover);
+    border-color: var(--accent);
+    transform: none; /* never combine the drag ghost with a hover lift */
+}
+
+body.is-dragging {
+    user-select: none;
+    -webkit-user-select: none;
 }
 
 .modal {
@@ -512,8 +693,8 @@ select:focus, input:focus, textarea:focus {
     background: none;
     border: none;
     color: var(--text-secondary);
-    width: 34px;
-    height: 34px;
+    width: 38px;
+    height: 38px;
     border-radius: 6px;
     cursor: pointer;
     display: flex;
@@ -524,13 +705,14 @@ select:focus, input:focus, textarea:focus {
 }
 
 .view-btn:hover {
-    color: var(--primary-color);
+    color: var(--accent);
     background: var(--bg-color);
 }
 
 .view-btn.active {
     background: var(--primary-color);
     color: #fff;
+    box-shadow: 0 0 12px var(--accent-glow);
 }
 
 /* Reorder hint (shown when Custom Order sort is active) */
@@ -547,149 +729,44 @@ select:focus, input:focus, textarea:focus {
     margin-bottom: 20px;
 }
 
-/* Drag and drop (shared across Large Icons / List / Details) */
-.drag-handle {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-secondary);
-    cursor: grab;
-    width: 20px;
-    flex-shrink: 0;
-}
-
-.drag-handle:active {
-    cursor: grabbing;
-}
-
-.drag-handle-hidden {
-    visibility: hidden;
-}
-
-.dragging {
-    opacity: 0.4;
-}
-
-.drag-over-above {
-    box-shadow: inset 0 2px 0 0 var(--primary-color);
-}
-
-.drag-over-below {
-    box-shadow: inset 0 -2px 0 0 var(--primary-color);
-}
-
-.action-icon:disabled {
-    opacity: 0.3;
-    cursor: not-allowed;
-    pointer-events: none;
-}
-
-/* List & Details views */
-.prompts-list,
-.prompts-table {
-    padding: 0 20px 20px 20px;
-}
-
-.prompt-row,
-.prompt-detail-row {
-    display: grid;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.prompt-row {
-    grid-template-columns: 24px 28px 1fr 200px auto;
-}
-
-.prompt-detail-row {
-    grid-template-columns: 24px 28px 1fr 200px 110px auto;
-}
-
-.prompt-row:last-child,
-.prompt-detail-row:last-child {
-    border-bottom: none;
-}
-
-.prompt-detail-header {
-    font-size: 0.78rem;
-    font-weight: 700;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    border-bottom: 2px solid var(--border-color);
-}
-
-.row-expand-toggle {
-    background: none;
-    border: none;
-    color: var(--text-secondary);
-    cursor: pointer;
-    width: 28px;
-    height: 28px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 6px;
-    flex-shrink: 0;
-    transition: all 0.2s;
-}
-
-.row-expand-toggle:hover {
-    color: var(--primary-color);
-    background: var(--bg-color);
-}
-
-.row-title {
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.row-tags {
-    display: flex;
-    gap: 4px;
-    overflow: hidden;
-    white-space: nowrap;
-}
-
-.row-updated {
-    color: var(--text-secondary);
-    font-size: 0.85rem;
-    white-space: nowrap;
-}
-
-.row-actions {
-    display: flex;
-    gap: 4px;
-    justify-content: flex-end;
-}
-
-.row-preview {
-    grid-column: 1 / -1;
-    background: var(--bg-color);
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    padding: 12px;
-    margin-top: 4px;
-    color: var(--text-secondary);
-    font-size: 0.9rem;
-    white-space: pre-wrap;
-    max-height: 300px;
-    overflow-y: auto;
-}
-
 @media (max-width: 640px) {
-    .prompt-row {
-        grid-template-columns: 20px 24px 1fr auto;
+    .prompts-grid { padding: 0 12px 16px 12px; }
+    .item-meta { font-size: 0.72rem; }
+}
+
+/* ---------------------------------------------------------------------------
+   Mobile refinements
+   - Single-column large grid so 280px cards never overflow narrow screens.
+   - Bottom-sheet modals that mimic native iOS/Android sheets.
+   --------------------------------------------------------------------------- */
+@media (max-width: 600px) {
+    .view-large {
+        grid-template-columns: 1fr;
     }
-    .prompt-detail-row {
-        grid-template-columns: 20px 24px 1fr auto;
+
+    .modal {
+        align-items: flex-end;
+        padding: 0;
     }
-    .row-tags,
-    .row-updated {
-        display: none;
+
+    /* .modal-content.modal-large is more specific than .modal-large, so the
+       large prompt modal is widened to full-bleed here too. */
+    .modal-content,
+    .modal-content.modal-large {
+        max-width: none;
+        width: 100%;
+        max-height: 85vh;
+        border-radius: 20px 20px 0 0;
+        padding-bottom: max(30px, env(safe-area-inset-bottom));
+    }
+}
+
+/* iOS Safari zooms the page when an input smaller than 16px is focused.
+   Pinning inputs to 16px on small screens keeps the layout stable. */
+@media (max-width: 768px) {
+    input,
+    select,
+    textarea {
+        font-size: 16px;
     }
 }
