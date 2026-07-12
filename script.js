@@ -9,13 +9,26 @@ let appData = {
 };
 let editState = { isEditing: false, id: null };
 
-// View state: 'large' (Large Icons), 'list' (List), 'details' (Details)
+// View state: 'large' (Large Icons), 'list' (List), 'compact' (Compact)
 let currentView = localStorage.getItem('promptManagerView') || 'large';
-// IDs of prompts whose body is currently expanded (manual expand/collapse state)
+// IDs of prompts whose body is currently expanded (list/compact views only).
 let expandedIds = new Set();
-// Drag-and-drop state (used only when sort-select === 'custom')
-let dragSrcId = null;
-let dragSrcCategory = null;
+// Categories the user has explicitly collapsed. Persisted so open/closed state
+// survives re-renders (reorder/edit/toggle) AND page reloads. Absence = open.
+let collapsedCategories = new Set(loadCollapsedState());
+
+function loadCollapsedState() {
+    try {
+        const raw = localStorage.getItem('promptManagerCollapsed');
+        return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function saveCollapsedState() {
+    localStorage.setItem('promptManagerCollapsed', JSON.stringify([...collapsedCategories]));
+}
 
 // DOM Elements
 const themeToggle = document.getElementById('theme-toggle');
@@ -51,9 +64,6 @@ function init() {
     initTheme();
     loadLocalData();
     ensureOrderField();
-    if (currentView === 'large') {
-        appData.prompts.forEach(p => expandedIds.add(p.id));
-    }
     updateViewButtons();
     renderPrompts();
     populateCategories();
@@ -118,21 +128,26 @@ function ensureOrderField() {
     });
 }
 
+// ---------------------------------------------------------------------------
 // Render
+//
+// Category open/closed state is kept in `collapsedCategories` (persisted), NOT
+// in the DOM. Every re-render reapplies it, so reordering, editing, or toggling
+// a prompt body no longer snaps categories shut. A category is OPEN by default
+// and only closed if the user explicitly collapsed it.
+// ---------------------------------------------------------------------------
 function renderPrompts() {
     const searchTerm = searchInput.value.toLowerCase();
     const category = categoryFilter.value;
     const sort = sortSelect.value;
     const isFiltering = searchTerm.length > 0 || category !== '';
-    // Reordering (drag-and-drop / arrow buttons) is only active when the
-    // person has explicitly chosen Custom Order, and only while browsing an
-    // unfiltered category (dragging within a filtered subset would silently
-    // reorder items that aren't visible, which is confusing).
+    // Reordering is only active in Custom Order and only on an unfiltered list
+    // (reordering a filtered subset would silently move hidden items).
     const canReorder = sort === 'custom' && !isFiltering;
 
-    let filtered = appData.prompts.filter(p => {
-        const matchesSearch = p.title.toLowerCase().includes(searchTerm) || 
-                              p.text.toLowerCase().includes(searchTerm) || 
+    const filtered = appData.prompts.filter(p => {
+        const matchesSearch = p.title.toLowerCase().includes(searchTerm) ||
+                              p.text.toLowerCase().includes(searchTerm) ||
                               (p.tags && p.tags.some(t => t.toLowerCase().includes(searchTerm)));
         const matchesCategory = category === "" || p.category === category;
         return matchesSearch && matchesCategory;
@@ -141,16 +156,19 @@ function renderPrompts() {
     promptsContainer.innerHTML = '';
 
     if (filtered.length === 0) {
-        promptsContainer.innerHTML = '<p class="empty-state">No prompts found.</p>';
+        promptsContainer.innerHTML = '<p class="empty-state">No prompts found. Create one with “New Prompt”.</p>';
         return;
     }
 
-    if (sort === 'custom') {
+    if (sort === 'custom' && !isFiltering) {
         const hint = document.createElement('div');
         hint.className = 'reorder-hint';
-        hint.innerHTML = isFiltering
-            ? '<i class="fas fa-circle-info"></i> Clear search/category filters to drag and reorder prompts.'
-            : '<i class="fas fa-grip-vertical"></i> Drag prompts by the handle (or use the arrow buttons) to reorder within a category. Order is saved automatically.';
+        hint.innerHTML = '<i class="fas fa-grip-vertical"></i> Drag the handle — or use the up/down arrows — to reorder within a category. Saved automatically.';
+        promptsContainer.appendChild(hint);
+    } else if (sort === 'custom' && isFiltering) {
+        const hint = document.createElement('div');
+        hint.className = 'reorder-hint';
+        hint.innerHTML = '<i class="fas fa-circle-info"></i> Clear search and category filters to reorder prompts.';
         promptsContainer.appendChild(hint);
     }
 
@@ -158,8 +176,7 @@ function renderPrompts() {
     const grouped = {};
     filtered.forEach(p => {
         const cat = p.category || 'Uncategorized';
-        if (!grouped[cat]) grouped[cat] = [];
-        grouped[cat].push(p);
+        (grouped[cat] = grouped[cat] || []).push(p);
     });
 
     const sortedCategories = Object.keys(grouped).sort((a, b) => {
@@ -174,14 +191,18 @@ function renderPrompts() {
 
         const section = document.createElement('div');
         section.className = 'category-section';
-        if (isFiltering) {
-            section.classList.add('expanded');
-        }
+        // Open if filtering (show all matches) or not explicitly collapsed.
+        const isOpen = isFiltering || !collapsedCategories.has(cat);
+        if (isOpen) section.classList.add('expanded');
 
         const header = document.createElement('div');
         header.className = 'category-header';
-        header.onclick = () => section.classList.toggle('expanded');
-
+        header.addEventListener('click', () => {
+            const nowOpen = section.classList.toggle('expanded');
+            if (nowOpen) collapsedCategories.delete(cat);
+            else collapsedCategories.add(cat);
+            saveCollapsedState();
+        });
         header.innerHTML = `
             <i class="fas fa-chevron-right arrow-icon"></i>
             <h2>${escapeHtml(cat)}</h2>
@@ -190,33 +211,17 @@ function renderPrompts() {
 
         const content = document.createElement('div');
         content.className = 'category-content';
-
         const contentInner = document.createElement('div');
         contentInner.className = 'category-content-inner';
 
-        let itemsContainer;
-        if (currentView === 'list') {
-            itemsContainer = document.createElement('div');
-            itemsContainer.className = 'prompts-list';
-            catPrompts.forEach((p, idx) => {
-                itemsContainer.appendChild(createListRow(p, cat, canReorder, idx, catPrompts.length));
-            });
-        } else if (currentView === 'details') {
-            itemsContainer = document.createElement('div');
-            itemsContainer.className = 'prompts-table';
-            itemsContainer.appendChild(createDetailsHeaderRow());
-            catPrompts.forEach((p, idx) => {
-                itemsContainer.appendChild(createDetailsRow(p, cat, canReorder, idx, catPrompts.length));
-            });
-        } else {
-            itemsContainer = document.createElement('div');
-            itemsContainer.className = 'prompts-grid';
-            catPrompts.forEach((p, idx) => {
-                itemsContainer.appendChild(createLargeCard(p, cat, canReorder, idx, catPrompts.length));
-            });
-        }
+        const grid = document.createElement('div');
+        grid.className = 'prompts-grid view-' + currentView;
 
-        contentInner.appendChild(itemsContainer);
+        catPrompts.forEach((p, idx) => {
+            grid.appendChild(createItem(p, cat, canReorder, idx, catPrompts.length));
+        });
+
+        contentInner.appendChild(grid);
         content.appendChild(contentInner);
         section.appendChild(header);
         section.appendChild(content);
@@ -226,8 +231,8 @@ function renderPrompts() {
 
 function sortPrompts(list, sort) {
     list.sort((a, b) => {
-        if (sort === 'date-desc') return b.updatedAt - a.updatedAt;
-        if (sort === 'date-asc') return a.updatedAt - b.updatedAt;
+        if (sort === 'date-desc') return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+        if (sort === 'date-asc') return (a.updatedAt ?? 0) - (b.updatedAt ?? 0);
         if (sort === 'name-asc') return a.title.localeCompare(b.title);
         if (sort === 'name-desc') return b.title.localeCompare(a.title);
         if (sort === 'custom') return (a.order ?? 0) - (b.order ?? 0);
@@ -235,145 +240,99 @@ function sortPrompts(list, sort) {
     });
 }
 
-// A prompt body only gets a collapse/expand control if it's actually long
-// enough to warrant one. Short prompts just render in full, no control needed.
-function promptNeedsToggle(text) {
-    if (!text) return false;
-    const lineBreaks = (text.match(/\n/g) || []).length;
-    return text.length > 220 || lineBreaks > 4;
+function populateCategories() {
+    const categories = new Set(appData.prompts.map(p => p.category).filter(c => c));
+
+    // Update datalist (used by the Add/Edit form's category input)
+    categoryList.innerHTML = '';
+    categories.forEach(c => {
+        const option = document.createElement('option');
+        option.value = c;
+        categoryList.appendChild(option);
+    });
+
+    // Update the filter dropdown, preserving the current selection
+    const currentFilter = categoryFilter.value;
+    categoryFilter.innerHTML = '<option value="">All Categories</option>';
+    categories.forEach(c => {
+        const option = document.createElement('option');
+        option.value = c;
+        option.textContent = c;
+        categoryFilter.appendChild(option);
+    });
+    categoryFilter.value = currentFilter;
 }
 
-// ---- Large Icons view ----
-function createLargeCard(p, cat, canReorder, idx, total) {
-    const card = document.createElement('div');
-    card.className = 'prompt-card';
-    card.dataset.id = p.id;
-    card.dataset.category = cat;
-    if (canReorder) card.draggable = true;
+// Whether a body is long enough to warrant a Show more / less control in the
+// current view. Large view always shows the full body, so never needs one.
+function bodyNeedsToggle(text) {
+    if (!text) return false;
+    if (currentView === 'large') return false;
+    const lineBreaks = (text.match(/\n/g) || []).length;
+    if (currentView === 'compact') return text.length > 60 || lineBreaks >= 1;
+    return text.length > 170 || lineBreaks >= 3; // list
+}
 
-    const tagsHtml = p.tags ? p.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('') : '';
-    const isExpanded = expandedIds.has(p.id);
-    const needsToggle = promptNeedsToggle(p.text);
-    const previewClass = needsToggle ? (isExpanded ? 'expanded' : 'collapsed') : '';
+// One unified item component for all three views. The view is expressed purely
+// through the container class (view-large / view-list / view-compact), which
+// drives how much of the body shows when collapsed. The full body text is
+// ALWAYS in the DOM, so expand/collapse is a pure CSS class toggle with no
+// re-render — which is what makes it reliable on mobile.
+function createItem(p, cat, canReorder, idx, total) {
+    const item = document.createElement('div');
+    item.className = 'prompt-item';
+    item.dataset.id = p.id;
+    item.dataset.category = cat;
 
-    card.innerHTML = `
-        <div class="card-header">
-            <span class="drag-handle ${canReorder ? '' : 'drag-handle-hidden'}" title="Drag to reorder">${canReorder ? '<i class="fas fa-grip-vertical"></i>' : ''}</span>
-            <div class="card-title">${escapeHtml(p.title)}</div>
-        </div>
-        <div class="card-tags">${tagsHtml}</div>
-        <div class="card-preview ${previewClass}">${escapeHtml(p.text)}</div>
-        ${needsToggle ? `<button class="preview-toggle" onclick="toggleExpand(${p.id})" aria-label="${isExpanded ? 'Show less' : 'Show more'}">
-            <i class="fas fa-chevron-${isExpanded ? 'up' : 'down'}"></i> ${isExpanded ? 'Show less' : 'Show more'}
-        </button>` : ''}
-        <div class="card-footer">
-            <button class="copy-btn" onclick="copyPrompt(${p.id})">
-                <i class="fas fa-copy"></i> Copy
-            </button>
-            <div class="card-actions">
-                ${canReorder ? `
-                    <button class="action-icon" onclick="movePrompt(${p.id}, -1)" title="Move up" aria-label="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-chevron-up"></i></button>
-                    <button class="action-icon" onclick="movePrompt(${p.id}, 1)" title="Move down" aria-label="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fas fa-chevron-down"></i></button>
-                ` : ''}
-                <button class="action-icon" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
-                <button class="action-icon delete" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
+    // Large view is always expanded; list/compact remember per-prompt state.
+    const expanded = currentView === 'large' || expandedIds.has(p.id);
+    if (expanded) item.classList.add('is-expanded');
+
+    const tagsHtml = (p.tags && p.tags.length)
+        ? p.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')
+        : '';
+    const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : '';
+    const needsToggle = bodyNeedsToggle(p.text);
+    const largeView = currentView === 'large';
+
+    const reorderBtns = canReorder ? `
+        <button class="tool-btn" onclick="movePrompt(${p.id}, -1)" title="Move up" aria-label="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
+        <button class="tool-btn" onclick="movePrompt(${p.id}, 1)" title="Move down" aria-label="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>` : '';
+
+    // Large view gets a prominent Copy button in the footer, so the tools row
+    // there is edit/delete only. List/compact keep copy in the tools row.
+    const copyInTools = largeView ? '' : `<button class="tool-btn" onclick="copyPrompt(${p.id})" title="Copy"><i class="fas fa-copy"></i></button>`;
+
+    item.innerHTML = `
+        <div class="item-top">
+            ${canReorder ? `<button class="drag-handle" aria-label="Drag to reorder" title="Drag to reorder"><i class="fas fa-grip-vertical"></i></button>` : ''}
+            <div class="item-head">
+                <span class="item-title">${escapeHtml(p.title)}</span>
+                ${!largeView && updated ? `<span class="item-meta">${updated}</span>` : ''}
+            </div>
+            <div class="item-tools">
+                ${reorderBtns}
+                ${copyInTools}
+                <button class="tool-btn" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
+                <button class="tool-btn danger" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
             </div>
         </div>
+        ${tagsHtml ? `<div class="item-tags">${tagsHtml}</div>` : ''}
+        <div class="prompt-body">${escapeHtml(p.text)}</div>
+        ${needsToggle ? `<button class="preview-toggle" onclick="toggleExpand(${p.id})">${expanded
+            ? '<i class="fas fa-chevron-up"></i> Show less'
+            : '<i class="fas fa-chevron-down"></i> Show more'}</button>` : ''}
+        ${largeView ? `<div class="item-footer">
+            <button class="copy-btn" onclick="copyPrompt(${p.id})"><i class="fas fa-copy"></i> Copy</button>
+            ${updated ? `<span class="item-meta">Updated ${updated}</span>` : ''}
+        </div>` : ''}
     `;
 
-    if (canReorder) attachDragHandlers(card);
-    return card;
-}
-
-// ---- List view ----
-function createListRow(p, cat, canReorder, idx, total) {
-    const row = document.createElement('div');
-    row.className = 'prompt-row';
-    row.dataset.id = p.id;
-    row.dataset.category = cat;
-    if (canReorder) row.draggable = true;
-
-    const isExpanded = expandedIds.has(p.id);
-    const tagsHtml = tagsPreviewHtml(p.tags, 3);
-
-    row.innerHTML = `
-        <span class="drag-handle ${canReorder ? '' : 'drag-handle-hidden'}" title="Drag to reorder">${canReorder ? '<i class="fas fa-grip-vertical"></i>' : ''}</span>
-        <button class="row-expand-toggle" onclick="toggleExpand(${p.id})" title="${isExpanded ? 'Collapse' : 'Expand'}" aria-label="${isExpanded ? 'Collapse' : 'Expand'}">
-            <i class="fas fa-chevron-${isExpanded ? 'down' : 'right'}"></i>
-        </button>
-        <div class="row-title">${escapeHtml(p.title)}</div>
-        <div class="row-tags">${tagsHtml}</div>
-        <div class="row-actions">
-            ${canReorder ? `
-                <button class="action-icon" onclick="movePrompt(${p.id}, -1)" title="Move up" aria-label="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-chevron-up"></i></button>
-                <button class="action-icon" onclick="movePrompt(${p.id}, 1)" title="Move down" aria-label="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fas fa-chevron-down"></i></button>
-            ` : ''}
-            <button class="action-icon" onclick="copyPrompt(${p.id})" title="Copy"><i class="fas fa-copy"></i></button>
-            <button class="action-icon" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
-            <button class="action-icon delete" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
-        </div>
-        ${isExpanded ? `<div class="row-preview">${escapeHtml(p.text)}</div>` : ''}
-    `;
-
-    if (canReorder) attachDragHandlers(row);
-    return row;
-}
-
-// ---- Details view ----
-function createDetailsHeaderRow() {
-    const header = document.createElement('div');
-    header.className = 'prompt-detail-row prompt-detail-header';
-    header.innerHTML = `
-        <span></span>
-        <span></span>
-        <span>Title</span>
-        <span>Tags</span>
-        <span>Updated</span>
-        <span></span>
-    `;
-    return header;
-}
-
-function createDetailsRow(p, cat, canReorder, idx, total) {
-    const row = document.createElement('div');
-    row.className = 'prompt-detail-row';
-    row.dataset.id = p.id;
-    row.dataset.category = cat;
-    if (canReorder) row.draggable = true;
-
-    const isExpanded = expandedIds.has(p.id);
-    const tagsHtml = tagsPreviewHtml(p.tags, 2);
-    const updatedStr = p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : '—';
-
-    row.innerHTML = `
-        <span class="drag-handle ${canReorder ? '' : 'drag-handle-hidden'}" title="Drag to reorder">${canReorder ? '<i class="fas fa-grip-vertical"></i>' : ''}</span>
-        <button class="row-expand-toggle" onclick="toggleExpand(${p.id})" title="${isExpanded ? 'Collapse' : 'Expand'}" aria-label="${isExpanded ? 'Collapse' : 'Expand'}">
-            <i class="fas fa-chevron-${isExpanded ? 'down' : 'right'}"></i>
-        </button>
-        <div class="row-title">${escapeHtml(p.title)}</div>
-        <div class="row-tags">${tagsHtml}</div>
-        <div class="row-updated">${updatedStr}</div>
-        <div class="row-actions">
-            ${canReorder ? `
-                <button class="action-icon" onclick="movePrompt(${p.id}, -1)" title="Move up" aria-label="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-chevron-up"></i></button>
-                <button class="action-icon" onclick="movePrompt(${p.id}, 1)" title="Move down" aria-label="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fas fa-chevron-down"></i></button>
-            ` : ''}
-            <button class="action-icon" onclick="copyPrompt(${p.id})" title="Copy"><i class="fas fa-copy"></i></button>
-            <button class="action-icon" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
-            <button class="action-icon delete" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
-        </div>
-        ${isExpanded ? `<div class="row-preview">${escapeHtml(p.text)}</div>` : ''}
-    `;
-
-    if (canReorder) attachDragHandlers(row);
-    return row;
-}
-
-function tagsPreviewHtml(tags, max) {
-    if (!tags || tags.length === 0) return '';
-    const shown = tags.slice(0, max).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
-    const extra = tags.length > max ? `<span class="tag">+${tags.length - max}</span>` : '';
-    return shown + extra;
+    if (canReorder) {
+        const handle = item.querySelector('.drag-handle');
+        if (handle) handle.addEventListener('pointerdown', (e) => startPointerDrag(e, item, p.id, cat));
+    }
+    return item;
 }
 
 // ---- View switching ----
@@ -381,117 +340,99 @@ window.setView = function(view) {
     if (view === currentView) return;
     currentView = view;
     localStorage.setItem('promptManagerView', view);
-    // Large Icons shows full bodies by default; List/Details start collapsed.
+    // Fresh view: large implies everything expanded; list/compact start collapsed.
     expandedIds = new Set();
-    if (view === 'large') {
-        appData.prompts.forEach(p => expandedIds.add(p.id));
-    }
     updateViewButtons();
     renderPrompts();
-}
+};
 
 function updateViewButtons() {
     document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'));
-    const map = { large: 'view-large', list: 'view-list', details: 'view-details' };
+    const map = { large: 'view-large', list: 'view-list', compact: 'view-compact' };
     const activeBtn = document.getElementById(map[currentView]);
     if (activeBtn) activeBtn.classList.add('active');
 }
 
-// ---- Expand/collapse ----
+// ---- Expand / collapse (targeted DOM toggle — no re-render) ----
 window.toggleExpand = function(id) {
-    if (expandedIds.has(id)) {
-        expandedIds.delete(id);
-    } else {
-        expandedIds.add(id);
+    const item = promptsContainer.querySelector('.prompt-item[data-id="' + id + '"]');
+    if (!item) return;
+    const nowExpanded = item.classList.toggle('is-expanded');
+    if (nowExpanded) expandedIds.add(id);
+    else expandedIds.delete(id);
+    const btn = item.querySelector('.preview-toggle');
+    if (btn) {
+        btn.innerHTML = nowExpanded
+            ? '<i class="fas fa-chevron-up"></i> Show less'
+            : '<i class="fas fa-chevron-down"></i> Show more';
     }
-    renderPrompts();
-}
+};
 
-// ---- Drag-and-drop reordering ----
-function attachDragHandlers(el) {
-    el.addEventListener('dragstart', handleDragStart);
-    el.addEventListener('dragover', handleDragOver);
-    el.addEventListener('dragleave', handleDragLeave);
-    el.addEventListener('drop', handleDrop);
-    el.addEventListener('dragend', handleDragEnd);
-}
+// ---------------------------------------------------------------------------
+// Pointer-based drag reordering
+//
+// Uses Pointer Events instead of the HTML5 drag API, because HTML5 drag does
+// not fire on touchscreens. `touch-action: none` on the handle stops the page
+// from scrolling mid-drag, and implicit pointer capture (touch) plus an
+// explicit setPointerCapture (mouse) keep move events flowing to us while the
+// dragged item is set to pointer-events:none so elementFromPoint can see what
+// is underneath the finger/cursor.
+// ---------------------------------------------------------------------------
+let dragState = null;
 
-function handleDragStart(e) {
-    dragSrcId = Number(e.currentTarget.dataset.id);
-    dragSrcCategory = e.currentTarget.dataset.category;
-    e.currentTarget.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    try { e.dataTransfer.setData('text/plain', String(dragSrcId)); } catch (err) { /* Firefox needs this set, ignore failures elsewhere */ }
-}
-
-function handleDragOver(e) {
+function startPointerDrag(e, item, id, category) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return; // left button only
     e.preventDefault();
-    const el = e.currentTarget;
-    if (Number(el.dataset.id) === dragSrcId) return;
-    const rect = el.getBoundingClientRect();
+    dragState = { item, id, category, container: item.parentElement, pointerId: e.pointerId };
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { /* older browsers */ }
+    item.classList.add('dragging');
+    document.body.classList.add('is-dragging');
+    document.addEventListener('pointermove', onPointerDragMove);
+    document.addEventListener('pointerup', endPointerDrag);
+    document.addEventListener('pointercancel', endPointerDrag);
+}
+
+function onPointerDragMove(e) {
+    if (!dragState) return;
+    e.preventDefault();
+    const below = document.elementFromPoint(e.clientX, e.clientY);
+    if (!below) return;
+    const target = below.closest('.prompt-item');
+    if (!target || target === dragState.item) return;
+    if (target.parentElement !== dragState.container) return;      // same category grid only
+    if (target.dataset.category !== String(dragState.category)) return;
+    const rect = target.getBoundingClientRect();
     const before = (e.clientY - rect.top) < rect.height / 2;
-    el.classList.toggle('drag-over-above', before);
-    el.classList.toggle('drag-over-below', !before);
+    dragState.container.insertBefore(dragState.item, before ? target : target.nextSibling);
 }
 
-function handleDragLeave(e) {
-    e.currentTarget.classList.remove('drag-over-above', 'drag-over-below');
+function endPointerDrag() {
+    if (!dragState) return;
+    const { item, container, category } = dragState;
+    item.classList.remove('dragging');
+    document.body.classList.remove('is-dragging');
+    document.removeEventListener('pointermove', onPointerDragMove);
+    document.removeEventListener('pointerup', endPointerDrag);
+    document.removeEventListener('pointercancel', endPointerDrag);
+    const orderedIds = Array.from(container.querySelectorAll('.prompt-item')).map(n => Number(n.dataset.id));
+    dragState = null;
+    commitOrder(category, orderedIds);
 }
 
-function handleDrop(e) {
-    e.preventDefault();
-    const el = e.currentTarget;
-    const targetId = Number(el.dataset.id);
-    const targetCategory = el.dataset.category;
-    const insertAbove = el.classList.contains('drag-over-above');
-    el.classList.remove('drag-over-above', 'drag-over-below');
-
-    if (dragSrcId === null || dragSrcId === targetId) return;
-    // Reordering only makes sense within the same category grouping.
-    // Cross-category drags are silently ignored; use Edit to change category.
-    if (dragSrcCategory !== targetCategory) {
-        dragSrcId = null;
-        dragSrcCategory = null;
-        return;
-    }
-    reorderWithinCategory(dragSrcId, targetId, insertAbove, targetCategory);
-    dragSrcId = null;
-    dragSrcCategory = null;
-}
-
-function handleDragEnd(e) {
-    e.currentTarget.classList.remove('dragging');
-    document.querySelectorAll('.drag-over-above, .drag-over-below').forEach(el => {
-        el.classList.remove('drag-over-above', 'drag-over-below');
+// Writes a new order to every prompt in the category based on DOM sequence,
+// persists (which pushes to the Gist), and re-renders to refresh arrow states.
+function commitOrder(category, orderedIds) {
+    const indexById = new Map(orderedIds.map((id, i) => [id, i]));
+    appData.prompts.forEach(p => {
+        if ((p.category || 'Uncategorized') === category && indexById.has(p.id)) {
+            p.order = indexById.get(p.id);
+        }
     });
-    dragSrcId = null;
-    dragSrcCategory = null;
-}
-
-function reorderWithinCategory(draggedId, targetId, insertAbove, category) {
-    const catPrompts = appData.prompts.filter(p => (p.category || 'Uncategorized') === category);
-    catPrompts.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-    const draggedIndex = catPrompts.findIndex(p => p.id === draggedId);
-    if (draggedIndex === -1) return;
-    const [draggedItem] = catPrompts.splice(draggedIndex, 1);
-
-    const targetIndex = catPrompts.findIndex(p => p.id === targetId);
-    if (targetIndex === -1) {
-        catPrompts.push(draggedItem);
-    } else {
-        const insertIndex = insertAbove ? targetIndex : targetIndex + 1;
-        catPrompts.splice(insertIndex, 0, draggedItem);
-    }
-
-    // Re-number sequentially so the new visual order is captured exactly.
-    catPrompts.forEach((p, idx) => { p.order = idx; });
-
     saveLocalData();
     renderPrompts();
 }
 
-// Arrow-button reordering (accessible / touch-friendly alternative to drag)
+// Arrow-button reordering: reliable, accessible alternative to dragging.
 window.movePrompt = function(id, direction) {
     const prompt = appData.prompts.find(p => p.id === id);
     if (!prompt) return;
@@ -509,30 +450,8 @@ window.movePrompt = function(id, direction) {
 
     saveLocalData();
     renderPrompts();
-}
+};
 
-function populateCategories() {
-    const categories = new Set(appData.prompts.map(p => p.category).filter(c => c));
-    
-    // Update datalist
-    categoryList.innerHTML = '';
-    categories.forEach(c => {
-        const option = document.createElement('option');
-        option.value = c;
-        categoryList.appendChild(option);
-    });
-
-    // Update filter dropdown
-    const currentFilter = categoryFilter.value;
-    categoryFilter.innerHTML = '<option value="">All Categories</option>';
-    categories.forEach(c => {
-        const option = document.createElement('option');
-        option.value = c;
-        option.textContent = c;
-        categoryFilter.appendChild(option);
-    });
-    categoryFilter.value = currentFilter;
-}
 
 // Actions
 window.copyPrompt = function(id) {
@@ -540,6 +459,8 @@ window.copyPrompt = function(id) {
     if (prompt) {
         navigator.clipboard.writeText(prompt.text).then(() => {
             showToast("Copied to clipboard!");
+        }).catch(() => {
+            showToast("Copy failed — clipboard unavailable.");
         });
     }
 }
@@ -626,7 +547,6 @@ promptForm.addEventListener('submit', (e) => {
             createdAt: newId,
             order: newId // sorts after existing (typically smaller) order values in Custom Order
         });
-        if (currentView === 'large') expandedIds.add(newId);
     }
 
     saveLocalData();
@@ -732,9 +652,6 @@ async function syncFromCloud() {
                 if (cloudData.lastModified > appData.lastModified) {
                     appData = cloudData;
                     ensureOrderField();
-                    if (currentView === 'large') {
-                        expandedIds = new Set(appData.prompts.map(p => p.id));
-                    }
                     localStorage.setItem('promptManagerData', JSON.stringify(appData));
                     renderPrompts();
                     populateCategories();
