@@ -1,5 +1,10 @@
 const GIST_FILENAME = "prompts-data.json";
 
+// Label for the virtual "Pinned" section rendered above the real categories.
+// It is a display shortcut only — pinned prompts still live in (and also
+// render inside) their own category.
+const PINNED_SECTION = "📌 Pinned";
+
 // State
 let GITHUB_TOKEN = localStorage.getItem('promptGithubToken') || "";
 let GIST_ID = localStorage.getItem('promptGistId') || "";
@@ -135,6 +140,12 @@ function ensureOrderField() {
 // in the DOM. Every re-render reapplies it, so reordering, editing, or toggling
 // a prompt body no longer snaps categories shut. A category is OPEN by default
 // and only closed if the user explicitly collapsed it.
+//
+// A virtual "Pinned" section renders first when any filtered prompt has
+// `pinned: true`. Pinned prompts appear BOTH there and in their real category;
+// the pinned copies are never reorderable (order is owned by the home
+// category). The pinned flag lives on the prompt object, so it syncs through
+// the Gist across devices.
 // ---------------------------------------------------------------------------
 function renderPrompts() {
     const searchTerm = searchInput.value.toLowerCase();
@@ -172,6 +183,16 @@ function renderPrompts() {
         promptsContainer.appendChild(hint);
     }
 
+    // Virtual pinned section (respects the active search/filter).
+    const pinned = filtered.filter(p => p.pinned);
+    if (pinned.length > 0) {
+        sortPrompts(pinned, sort);
+        // Pinned copies are never reorderable — order belongs to the home category.
+        promptsContainer.appendChild(
+            buildCategorySection(PINNED_SECTION, pinned, false, isFiltering, 'pinned-section')
+        );
+    }
+
     // Group by category
     const grouped = {};
     filtered.forEach(p => {
@@ -188,51 +209,59 @@ function renderPrompts() {
     sortedCategories.forEach(cat => {
         const catPrompts = grouped[cat];
         sortPrompts(catPrompts, sort);
-
-        const section = document.createElement('div');
-        section.className = 'category-section';
-        // Open if filtering (show all matches) or not explicitly collapsed.
-        const isOpen = isFiltering || !collapsedCategories.has(cat);
-        if (isOpen) section.classList.add('expanded');
-
-        const header = document.createElement('div');
-        header.className = 'category-header';
-        header.addEventListener('click', () => {
-            const nowOpen = section.classList.toggle('expanded');
-            if (nowOpen) collapsedCategories.delete(cat);
-            else collapsedCategories.add(cat);
-            saveCollapsedState();
-        });
-        header.innerHTML = `
-            <i class="fas fa-chevron-right arrow-icon"></i>
-            <h2>${escapeHtml(cat)}</h2>
-            <span class="category-count">${catPrompts.length}</span>
-        `;
-
-        const content = document.createElement('div');
-        content.className = 'category-content';
-        const contentInner = document.createElement('div');
-        contentInner.className = 'category-content-inner';
-
-        const grid = document.createElement('div');
-        grid.className = 'prompts-grid view-' + currentView;
-
-        catPrompts.forEach((p, idx) => {
-            grid.appendChild(createItem(p, cat, canReorder, idx, catPrompts.length));
-        });
-
-        contentInner.appendChild(grid);
-        content.appendChild(contentInner);
-        section.appendChild(header);
-        section.appendChild(content);
-        promptsContainer.appendChild(section);
+        promptsContainer.appendChild(
+            buildCategorySection(cat, catPrompts, canReorder, isFiltering, '')
+        );
     });
+}
+
+// Builds one collapsible category section. Extracted so the virtual Pinned
+// section and the real categories share identical behavior (open/closed
+// persistence, header toggle, grid/view classes).
+function buildCategorySection(cat, catPrompts, canReorder, isFiltering, extraClass) {
+    const section = document.createElement('div');
+    section.className = 'category-section' + (extraClass ? ' ' + extraClass : '');
+    // Open if filtering (show all matches) or not explicitly collapsed.
+    const isOpen = isFiltering || !collapsedCategories.has(cat);
+    if (isOpen) section.classList.add('expanded');
+
+    const header = document.createElement('div');
+    header.className = 'category-header';
+    header.addEventListener('click', () => {
+        const nowOpen = section.classList.toggle('expanded');
+        if (nowOpen) collapsedCategories.delete(cat);
+        else collapsedCategories.add(cat);
+        saveCollapsedState();
+    });
+    header.innerHTML = `
+        <i class="fas fa-chevron-right arrow-icon"></i>
+        <h2>${escapeHtml(cat)}</h2>
+        <span class="category-count">${catPrompts.length}</span>
+    `;
+
+    const content = document.createElement('div');
+    content.className = 'category-content';
+    const contentInner = document.createElement('div');
+    contentInner.className = 'category-content-inner';
+
+    const grid = document.createElement('div');
+    grid.className = 'prompts-grid view-' + currentView;
+
+    catPrompts.forEach((p, idx) => {
+        grid.appendChild(createItem(p, cat, canReorder, idx, catPrompts.length));
+    });
+
+    contentInner.appendChild(grid);
+    content.appendChild(contentInner);
+    section.appendChild(header);
+    section.appendChild(content);
+    return section;
 }
 
 function sortPrompts(list, sort) {
     list.sort((a, b) => {
-        if (sort === 'date-desc') return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
-        if (sort === 'date-asc') return (a.updatedAt ?? 0) - (b.updatedAt ?? 0);
+        if (sort === 'date-desc') return b.updatedAt - a.updatedAt;
+        if (sort === 'date-asc') return a.updatedAt - b.updatedAt;
         if (sort === 'name-asc') return a.title.localeCompare(b.title);
         if (sort === 'name-desc') return b.title.localeCompare(a.title);
         if (sort === 'custom') return (a.order ?? 0) - (b.order ?? 0);
@@ -273,6 +302,18 @@ function bodyNeedsToggle(text) {
     return text.length > 170 || lineBreaks >= 3; // list
 }
 
+// Character + rough token count for a prompt body. Tokens are estimated at
+// ~4 characters/token (the common English heuristic) — close enough to judge
+// whether a prompt fits a context window, which is all a card needs.
+function countsFor(text) {
+    const chars = (text || '').length;
+    const tokens = Math.max(1, Math.round(chars / 4));
+    if (currentView === 'large') {
+        return `${chars.toLocaleString()} chars · ~${tokens.toLocaleString()} tokens`;
+    }
+    return `${chars.toLocaleString()} ch · ~${tokens.toLocaleString()} tok`;
+}
+
 // One unified item component for all three views. The view is expressed purely
 // through the container class (view-large / view-list / view-compact), which
 // drives how much of the body shows when collapsed. The full body text is
@@ -294,10 +335,14 @@ function createItem(p, cat, canReorder, idx, total) {
     const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : '';
     const needsToggle = bodyNeedsToggle(p.text);
     const largeView = currentView === 'large';
+    const counts = countsFor(p.text);
 
     const reorderBtns = canReorder ? `
         <button class="tool-btn" onclick="movePrompt(${p.id}, -1)" title="Move up" aria-label="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
         <button class="tool-btn" onclick="movePrompt(${p.id}, 1)" title="Move down" aria-label="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>` : '';
+
+    // Pin/unpin star. Solid amber star = pinned; hollow star = not pinned.
+    const pinBtn = `<button class="tool-btn pin-btn${p.pinned ? ' pinned' : ''}" onclick="togglePin(${p.id})" title="${p.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${p.pinned ? 'Unpin' : 'Pin to top'}" aria-pressed="${p.pinned ? 'true' : 'false'}"><i class="${p.pinned ? 'fas' : 'far'} fa-star"></i></button>`;
 
     // Large view gets a prominent Copy button in the footer, so the tools row
     // there is edit/delete only. List/compact keep copy in the tools row.
@@ -309,9 +354,11 @@ function createItem(p, cat, canReorder, idx, total) {
             <div class="item-head">
                 <span class="item-title">${escapeHtml(p.title)}</span>
                 ${!largeView && updated ? `<span class="item-meta">${updated}</span>` : ''}
+                ${!largeView ? `<span class="item-meta item-counts">${counts}</span>` : ''}
             </div>
             <div class="item-tools">
                 ${reorderBtns}
+                ${pinBtn}
                 ${copyInTools}
                 <button class="tool-btn" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
                 <button class="tool-btn danger" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
@@ -324,7 +371,7 @@ function createItem(p, cat, canReorder, idx, total) {
             : '<i class="fas fa-chevron-down"></i> Show more'}</button>` : ''}
         ${largeView ? `<div class="item-footer">
             <button class="copy-btn" onclick="copyPrompt(${p.id})"><i class="fas fa-copy"></i> Copy</button>
-            ${updated ? `<span class="item-meta">Updated ${updated}</span>` : ''}
+            <span class="item-meta"><span class="item-counts">${counts}</span>${updated ? ` · Updated ${updated}` : ''}</span>
         </div>` : ''}
     `;
 
@@ -354,18 +401,35 @@ function updateViewButtons() {
 }
 
 // ---- Expand / collapse (targeted DOM toggle — no re-render) ----
+// A pinned prompt renders twice (Pinned section + its home category), so this
+// updates EVERY instance of the id, with `expandedIds` as the source of truth.
 window.toggleExpand = function(id) {
-    const item = promptsContainer.querySelector('.prompt-item[data-id="' + id + '"]');
-    if (!item) return;
-    const nowExpanded = item.classList.toggle('is-expanded');
+    const items = promptsContainer.querySelectorAll('.prompt-item[data-id="' + id + '"]');
+    if (!items.length) return;
+    const nowExpanded = !expandedIds.has(id);
     if (nowExpanded) expandedIds.add(id);
     else expandedIds.delete(id);
-    const btn = item.querySelector('.preview-toggle');
-    if (btn) {
-        btn.innerHTML = nowExpanded
-            ? '<i class="fas fa-chevron-up"></i> Show less'
-            : '<i class="fas fa-chevron-down"></i> Show more';
-    }
+    items.forEach(item => {
+        item.classList.toggle('is-expanded', nowExpanded);
+        const btn = item.querySelector('.preview-toggle');
+        if (btn) {
+            btn.innerHTML = nowExpanded
+                ? '<i class="fas fa-chevron-up"></i> Show less'
+                : '<i class="fas fa-chevron-down"></i> Show more';
+        }
+    });
+};
+
+// ---- Pin / unpin ----
+// The flag is stored on the prompt object itself, so it round-trips through
+// saveLocalData() -> Gist and follows the user across devices.
+window.togglePin = function(id) {
+    const prompt = appData.prompts.find(p => p.id === id);
+    if (!prompt) return;
+    prompt.pinned = !prompt.pinned;
+    saveLocalData();
+    renderPrompts();
+    showToast(prompt.pinned ? "Pinned to top." : "Unpinned.");
 };
 
 // ---------------------------------------------------------------------------
@@ -459,8 +523,6 @@ window.copyPrompt = function(id) {
     if (prompt) {
         navigator.clipboard.writeText(prompt.text).then(() => {
             showToast("Copied to clipboard!");
-        }).catch(() => {
-            showToast("Copy failed — clipboard unavailable.");
         });
     }
 }
