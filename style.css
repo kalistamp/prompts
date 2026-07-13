@@ -770,3 +770,37 @@ body.is-dragging {
         font-size: 16px;
     }
 }
+
+/* ---------------------------------------------------------------------------
+   Pinning + card counts
+   --------------------------------------------------------------------------- */
+
+/* Pinned star: amber when active so it reads as "starred" at a glance and
+   stays distinct from the cyan accent used for generic hover states. */
+.pin-btn.pinned {
+    color: #f59e0b;
+}
+
+.pin-btn.pinned:hover {
+    color: #d97706;
+    background: var(--bg-color);
+}
+
+/* The virtual Pinned section gets a faint accent border to separate it from
+   the real categories without shouting. */
+.category-section.pinned-section {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-glow);
+}
+
+/* Char/token counts render in mono like the other tech elements. */
+.item-counts {
+    font-family: var(--font-mono);
+}
+
+/* Compact view on narrow phones: hide counts so the title keeps the room. */
+@media (max-width: 640px) {
+    .view-compact .item-counts {
+        display: none;
+    }
+}
