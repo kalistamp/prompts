@@ -27,6 +27,7 @@ let syncQueued = false;
 
 // View state: 'large' (Large Icons), 'list' (List), 'compact' (Compact)
 let currentView = localStorage.getItem('promptManagerView') || 'large';
+if (!['large', 'list', 'compact'].includes(currentView)) currentView = 'large';
 // IDs of prompts whose body is currently expanded (list/compact views only).
 let expandedIds = new Set();
 // Categories the user has explicitly collapsed. Persisted so open/closed state
@@ -36,7 +37,8 @@ let collapsedCategories = new Set(loadCollapsedState());
 function loadCollapsedState() {
     try {
         const raw = localStorage.getItem('promptManagerCollapsed');
-        return raw ? JSON.parse(raw) : [];
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
     } catch (e) {
         return [];
     }
@@ -98,8 +100,11 @@ async function init() {
         SUPABASE_CONFIG.url,
         SUPABASE_CONFIG.publishableKey
     );
-    supabaseClient.auth.onAuthStateChange(event => {
+    supabaseClient.auth.onAuthStateChange((event, session) => {
         if (event === 'SIGNED_OUT' && currentUser) endUserSession();
+        if (event === 'SIGNED_IN' && session?.user) {
+            setTimeout(() => startUserSession(session.user), 0);
+        }
     });
 
     const { data, error } = await supabaseClient.auth.getSession();
@@ -748,19 +753,25 @@ loginForm.addEventListener('submit', async event => {
     submitButton.disabled = true;
     submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in…';
 
-    const { data, error } = await supabaseClient.auth.signInWithPassword({
-        email: loginEmail.value.trim(),
-        password: loginPassword.value
-    });
+    try {
+        const authRequest = supabaseClient.auth.signInWithPassword({
+            email: loginEmail.value.trim(),
+            password: loginPassword.value
+        });
+        const { data, error } = await withTimeout(authRequest, 15000);
 
-    submitButton.disabled = false;
-    submitButton.innerHTML = '<i class="fas fa-right-to-bracket"></i> Sign in';
-    if (error) {
-        loginError.textContent = error.message;
-        return;
+        if (error) throw error;
+        if (!data?.user) throw new Error('Sign-in succeeded but no user session was returned. Please refresh and try again.');
+
+        loginPassword.value = '';
+        await startUserSession(data.user);
+    } catch (error) {
+        console.error('Sign-in failed:', error);
+        loginError.textContent = error.message || 'Sign-in failed. Please refresh and try again.';
+    } finally {
+        submitButton.disabled = false;
+        submitButton.innerHTML = '<i class="fas fa-right-to-bracket"></i> Sign in';
     }
-    loginPassword.value = '';
-    await startUserSession(data.user);
 });
 
 syncBtn.addEventListener('click', async () => {
@@ -768,7 +779,12 @@ syncBtn.addEventListener('click', async () => {
 });
 
 async function startUserSession(user) {
-    if (!user || currentUser?.id === user.id) return;
+    if (!user) throw new Error('No authenticated user session was returned.');
+    if (currentUser?.id === user.id) {
+        authScreen.hidden = true;
+        appContainer.hidden = false;
+        return;
+    }
     currentUser = user;
     cloudVersion = 0;
     accountEmail.textContent = user.email || user.id;
@@ -779,7 +795,17 @@ async function startUserSession(user) {
     updateViewButtons();
     renderPrompts();
     populateCategories();
-    await syncFromCloud(false);
+    // Do not hold the login screen open while cloud data loads. Sync errors are
+    // reported inside syncFromCloud and the locally cached app remains usable.
+    void syncFromCloud(false);
+}
+
+function withTimeout(promise, milliseconds) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Sign-in timed out. Check your connection and try again.')), milliseconds);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function endUserSession() {
@@ -922,4 +948,7 @@ function showToast(message) {
 }
 
 // Run
-init();
+init().catch(error => {
+    console.error('Application initialization failed:', error);
+    loginError.textContent = error.message || 'The application could not start. Please refresh and try again.';
+});
