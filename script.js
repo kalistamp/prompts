@@ -781,6 +781,7 @@ syncBtn.addEventListener('click', async () => {
 async function startUserSession(user) {
     if (!user) throw new Error('No authenticated user session was returned.');
     if (currentUser?.id === user.id) {
+        document.body.classList.add('is-authenticated');
         authScreen.hidden = true;
         appContainer.hidden = false;
         return;
@@ -788,6 +789,7 @@ async function startUserSession(user) {
     currentUser = user;
     cloudVersion = 0;
     accountEmail.textContent = user.email || user.id;
+    document.body.classList.add('is-authenticated');
     authScreen.hidden = true;
     appContainer.hidden = false;
     loadLocalData();
@@ -813,6 +815,7 @@ function endUserSession() {
     cloudVersion = 0;
     appData = normalizeData(null);
     localStorage.removeItem('promptManagerData');
+    document.body.classList.remove('is-authenticated');
     appContainer.hidden = true;
     authScreen.hidden = false;
     loginEmail.focus();

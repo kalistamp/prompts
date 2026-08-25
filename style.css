@@ -54,13 +54,29 @@ body {
     transition: background-color 0.3s, color 0.3s;
 }
 
+/* Author styles can override the browser's default [hidden] behavior. Keep
+   authentication and application screens mutually exclusive everywhere. */
+.auth-screen[hidden],
+.app-container[hidden] {
+    display: none !important;
+}
+
 /* Tighter, editorial letter-spacing on headings (h1 already carries this). */
 h2 { letter-spacing: -0.03em; }
 
 .app-container {
+    display: none;
     max-width: 1200px;
     margin: 0 auto;
     padding: 20px;
+}
+
+body.is-authenticated .app-container {
+    display: block;
+}
+
+body.is-authenticated .auth-screen {
+    display: none !important;
 }
 
 header {
@@ -657,10 +673,14 @@ body.is-dragging {
 
 /* Authentication */
 .auth-screen {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
     min-height: 100vh;
     display: grid;
     place-items: center;
     padding: 24px;
+    overflow-y: auto;
     background:
         radial-gradient(circle at top, var(--accent-glow), transparent 42%),
         var(--bg-color);
