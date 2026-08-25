@@ -3,27 +3,48 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LLM Prompt Manager</title>
+    <meta name="description" content="Organize and securely sync reusable AI prompts.">
+    <title>Prompt Studio</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
 </head>
 <body>
+    <section id="auth-screen" class="auth-screen">
+        <div class="auth-card">
+            <i class="fas fa-wand-magic-sparkles auth-icon"></i>
+            <h1>Prompt Studio</h1>
+            <p>Sign in to securely sync your prompts.</p>
+            <form id="login-form">
+                <div class="form-control">
+                    <label for="login-email">Email</label>
+                    <input type="email" id="login-email" autocomplete="email" required>
+                </div>
+                <div class="form-control">
+                    <label for="login-password">Password</label>
+                    <input type="password" id="login-password" autocomplete="current-password" required>
+                </div>
+                <button class="btn auth-submit" type="submit"><i class="fas fa-right-to-bracket"></i> Sign in</button>
+                <p id="login-error" class="form-error" role="alert"></p>
+            </form>
+        </div>
+    </section>
+
     <!-- Settings Modal -->
     <div id="settings-modal" class="modal">
         <div class="modal-content">
-            <h2><i class="fas fa-cog"></i> Cloud Sync Setup</h2>
-            <p class="modal-desc">Enter your GitHub credentials to enable cloud syncing. Your token is stored locally. <strong>Warning: Never share your Personal Access Token.</strong></p>
-            <div class="form-control">
-                <label>GitHub Personal Access Token (with 'gist' scope)</label>
-                <input type="password" id="github-token-input" placeholder="ghp_...">
+            <h2><i class="fas fa-cloud"></i> Cloud Sync</h2>
+            <p class="modal-desc">Your prompts are stored in the <strong>prompts</strong> schema and protected by your Supabase account.</p>
+            <div class="account-row">
+                <span>Signed in as</span>
+                <strong id="account-email"></strong>
             </div>
-            <div class="form-control">
-                <label>Gist ID</label>
-                <input type="text" id="gist-id-input" placeholder="e.g. a1b2c3d4e5f6...">
+            <div class="account-row">
+                <span>Status</span>
+                <strong id="cloud-status">Checking…</strong>
             </div>
             <div class="modal-actions">
-                <button class="btn" id="save-settings-btn">Save & Sync</button>
-                <button class="btn btn-secondary" id="close-settings-btn">Cancel</button>
+                <button class="btn btn-secondary" id="sign-out-btn"><i class="fas fa-right-from-bracket"></i> Sign out</button>
+                <button class="btn" id="close-settings-btn">Done</button>
             </div>
         </div>
     </div>
@@ -64,7 +85,7 @@
         </div>
     </div>
 
-    <div class="app-container">
+    <div class="app-container" id="app-container" hidden>
         <header>
             <div class="header-left">
                 <h1>Prompt Studio</h1>
@@ -107,6 +128,7 @@
             </div>
         </main>
     </div>
-    <script src="script.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="script.js?v=2"></script>
 </body>
 </html>

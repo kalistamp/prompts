@@ -1,4 +1,10 @@
-const GIST_FILENAME = "prompts-data.json";
+// These are public browser credentials. The service-role key must never be
+// placed in this repository or sent to the browser.
+const SUPABASE_CONFIG = {
+    url: "https://baiojghilzxhkebfblzv.supabase.co",
+    publishableKey: "sb_publishable_nfLVr5Krdld9pxxr4f2CYQ_bsn0TNxx",
+    schema: "prompts"
+};
 
 // Label for the virtual "Pinned" section rendered above the real categories.
 // It is a display shortcut only — pinned prompts still live in (and also
@@ -6,13 +12,18 @@ const GIST_FILENAME = "prompts-data.json";
 const PINNED_SECTION = "📌 Pinned";
 
 // State
-let GITHUB_TOKEN = localStorage.getItem('promptGithubToken') || "";
-let GIST_ID = localStorage.getItem('promptGistId') || "";
 let appData = {
     lastModified: 0,
-    prompts: []
+    prompts: [],
+    deleted: []
 };
 let editState = { isEditing: false, id: null };
+let supabaseClient = null;
+let currentUser = null;
+let cloudVersion = 0;
+let syncTimeout = null;
+let syncInFlight = false;
+let syncQueued = false;
 
 // View state: 'large' (Large Icons), 'list' (List), 'compact' (Compact)
 let currentView = localStorage.getItem('promptManagerView') || 'large';
@@ -42,10 +53,16 @@ const settingsBtn = document.getElementById('settings-btn');
 const addPromptBtn = document.getElementById('add-prompt-btn');
 
 const settingsModal = document.getElementById('settings-modal');
-const githubTokenInput = document.getElementById('github-token-input');
-const gistIdInput = document.getElementById('gist-id-input');
-const saveSettingsBtn = document.getElementById('save-settings-btn');
 const closeSettingsBtn = document.getElementById('close-settings-btn');
+const signOutBtn = document.getElementById('sign-out-btn');
+const accountEmail = document.getElementById('account-email');
+const cloudStatus = document.getElementById('cloud-status');
+const authScreen = document.getElementById('auth-screen');
+const appContainer = document.getElementById('app-container');
+const loginForm = document.getElementById('login-form');
+const loginEmail = document.getElementById('login-email');
+const loginPassword = document.getElementById('login-password');
+const loginError = document.getElementById('login-error');
 
 const promptModal = document.getElementById('prompt-modal');
 const promptForm = document.getElementById('prompt-form');
@@ -65,16 +82,33 @@ const sortSelect = document.getElementById('sort-select');
 const categoryList = document.getElementById('category-list');
 
 // Initialize
-function init() {
+async function init() {
     initTheme();
-    loadLocalData();
-    ensureOrderField();
-    updateViewButtons();
-    renderPrompts();
-    populateCategories();
-    if (GITHUB_TOKEN && GIST_ID) {
-        syncFromCloud();
+
+    // Remove obsolete Gist credentials left by an older deployment.
+    localStorage.removeItem('promptGithubToken');
+    localStorage.removeItem('promptGistId');
+
+    if (!window.supabase) {
+        loginError.textContent = "Cloud library failed to load. Check your connection and refresh.";
+        return;
     }
+
+    supabaseClient = window.supabase.createClient(
+        SUPABASE_CONFIG.url,
+        SUPABASE_CONFIG.publishableKey
+    );
+    supabaseClient.auth.onAuthStateChange(event => {
+        if (event === 'SIGNED_OUT' && currentUser) endUserSession();
+    });
+
+    const { data, error } = await supabaseClient.auth.getSession();
+    if (error) {
+        loginError.textContent = error.message;
+        return;
+    }
+
+    if (data.session?.user) await startUserSession(data.session.user);
 }
 
 // Theme Logic
@@ -106,11 +140,13 @@ function loadLocalData() {
     try {
         const stored = localStorage.getItem('promptManagerData');
         if (stored) {
-            appData = JSON.parse(stored);
-            if (!appData.prompts) appData = { lastModified: Date.now(), prompts: [] };
+            appData = normalizeData(JSON.parse(stored));
+        } else {
+            appData = normalizeData(null);
         }
     } catch (e) {
         console.error("Error loading local data", e);
+        appData = normalizeData(null);
     }
 }
 
@@ -118,12 +154,69 @@ function saveLocalData() {
     appData.lastModified = Date.now();
     localStorage.setItem('promptManagerData', JSON.stringify(appData));
     populateCategories();
-    saveToGist();
+    queueCloudSave();
+}
+
+function normalizeData(raw) {
+    const source = raw && typeof raw === 'object' ? raw : {};
+    const prompts = Array.isArray(source.prompts)
+        ? source.prompts.filter(p => p && Number.isFinite(Number(p.id))).map(p => ({
+            ...p,
+            id: Number(p.id),
+            title: String(p.title || ''),
+            text: String(p.text || ''),
+            category: String(p.category || ''),
+            tags: Array.isArray(p.tags) ? p.tags.map(String) : [],
+            notes: String(p.notes || ''),
+            pinned: Boolean(p.pinned),
+            createdAt: Number(p.createdAt || p.id || Date.now()),
+            updatedAt: Number(p.updatedAt || p.createdAt || p.id || Date.now()),
+            order: Number.isFinite(Number(p.order)) ? Number(p.order) : Number(p.createdAt || p.id || Date.now())
+        }))
+        : [];
+    const deleted = Array.isArray(source.deleted)
+        ? source.deleted
+            .filter(item => item && Number.isFinite(Number(item.id)))
+            .map(item => ({ id: Number(item.id), deletedAt: Number(item.deletedAt || 0) }))
+        : [];
+
+    return {
+        lastModified: Number(source.lastModified || 0),
+        prompts,
+        deleted
+    };
+}
+
+function mergeData(localValue, cloudValue) {
+    const local = normalizeData(localValue);
+    const cloud = normalizeData(cloudValue);
+    const promptsById = new Map();
+    const deletedById = new Map();
+
+    [...cloud.prompts, ...local.prompts].forEach(prompt => {
+        const existing = promptsById.get(prompt.id);
+        if (!existing || prompt.updatedAt >= existing.updatedAt) promptsById.set(prompt.id, prompt);
+    });
+    [...cloud.deleted, ...local.deleted].forEach(item => {
+        const existing = deletedById.get(item.id) || 0;
+        if (item.deletedAt > existing) deletedById.set(item.id, item.deletedAt);
+    });
+
+    const prompts = [...promptsById.values()].filter(prompt => {
+        const deletedAt = deletedById.get(prompt.id) || 0;
+        return prompt.updatedAt > deletedAt;
+    });
+
+    return {
+        lastModified: Math.max(local.lastModified, cloud.lastModified),
+        prompts,
+        deleted: [...deletedById].map(([id, deletedAt]) => ({ id, deletedAt }))
+    };
 }
 
 // Ensures every prompt has a numeric `order` field, used for Custom Order
-// sort/drag-and-drop. Existing prompts (from before this feature, or synced
-// from an older Gist) fall back to their creation time so their initial
+// sort/drag-and-drop. Existing prompts from an older backup fall back to
+// their creation time so their initial
 // custom order matches the order they were originally added in.
 function ensureOrderField() {
     appData.prompts.forEach(p => {
@@ -145,7 +238,7 @@ function ensureOrderField() {
 // `pinned: true`. Pinned prompts appear BOTH there and in their real category;
 // the pinned copies are never reorderable (order is owned by the home
 // category). The pinned flag lives on the prompt object, so it syncs through
-// the Gist across devices.
+// Supabase across devices.
 // ---------------------------------------------------------------------------
 function renderPrompts() {
     const searchTerm = searchInput.value.toLowerCase();
@@ -422,11 +515,12 @@ window.toggleExpand = function(id) {
 
 // ---- Pin / unpin ----
 // The flag is stored on the prompt object itself, so it round-trips through
-// saveLocalData() -> Gist and follows the user across devices.
+// saveLocalData() -> Supabase and follows the user across devices.
 window.togglePin = function(id) {
     const prompt = appData.prompts.find(p => p.id === id);
     if (!prompt) return;
     prompt.pinned = !prompt.pinned;
+    prompt.updatedAt = Date.now();
     saveLocalData();
     renderPrompts();
     showToast(prompt.pinned ? "Pinned to top." : "Unpinned.");
@@ -484,12 +578,14 @@ function endPointerDrag() {
 }
 
 // Writes a new order to every prompt in the category based on DOM sequence,
-// persists (which pushes to the Gist), and re-renders to refresh arrow states.
+// persists (which pushes to Supabase), and re-renders to refresh arrow states.
 function commitOrder(category, orderedIds) {
     const indexById = new Map(orderedIds.map((id, i) => [id, i]));
+    const changedAt = Date.now();
     appData.prompts.forEach(p => {
         if ((p.category || 'Uncategorized') === category && indexById.has(p.id)) {
             p.order = indexById.get(p.id);
+            p.updatedAt = changedAt;
         }
     });
     saveLocalData();
@@ -511,6 +607,9 @@ window.movePrompt = function(id, direction) {
     const tmp = catPrompts[idx].order;
     catPrompts[idx].order = catPrompts[swapIdx].order;
     catPrompts[swapIdx].order = tmp;
+    const changedAt = Date.now();
+    catPrompts[idx].updatedAt = changedAt;
+    catPrompts[swapIdx].updatedAt = changedAt;
 
     saveLocalData();
     renderPrompts();
@@ -529,7 +628,10 @@ window.copyPrompt = function(id) {
 
 window.deletePrompt = function(id) {
     if (confirm("Are you sure you want to delete this prompt?")) {
+        const deletedAt = Date.now();
         appData.prompts = appData.prompts.filter(p => p.id !== id);
+        appData.deleted = appData.deleted.filter(item => item.id !== id);
+        appData.deleted.push({ id, deletedAt });
         expandedIds.delete(id);
         saveLocalData();
         renderPrompts();
@@ -603,6 +705,7 @@ promptForm.addEventListener('submit', (e) => {
         });
     } else {
         const newId = Date.now();
+        appData.deleted = appData.deleted.filter(item => item.id !== newId);
         appData.prompts.push({
             ...promptData,
             id: newId,
@@ -618,8 +721,7 @@ promptForm.addEventListener('submit', (e) => {
 
 // Settings & Sync
 settingsBtn.addEventListener('click', () => {
-    githubTokenInput.value = GITHUB_TOKEN;
-    gistIdInput.value = GIST_ID;
+    accountEmail.textContent = currentUser?.email || 'Unknown account';
     settingsModal.classList.add('active');
 });
 
@@ -627,114 +729,171 @@ closeSettingsBtn.addEventListener('click', () => {
     settingsModal.classList.remove('active');
 });
 
-saveSettingsBtn.addEventListener('click', () => {
-    GITHUB_TOKEN = githubTokenInput.value.trim();
-    GIST_ID = gistIdInput.value.trim();
-    
-    localStorage.setItem('promptGithubToken', GITHUB_TOKEN);
-    localStorage.setItem('promptGistId', GIST_ID);
-    
-    settingsModal.classList.remove('active');
-    
-    if (GITHUB_TOKEN && GIST_ID) {
-        syncFromCloud();
-    }
-});
-
-syncBtn.addEventListener('click', () => {
-    syncFromCloud();
-});
-
-let syncTimeout;
-function saveToGist() {
-    if (!GITHUB_TOKEN || !GIST_ID) return;
-    
-    clearTimeout(syncTimeout);
-    syncTimeout = setTimeout(async () => {
-        syncBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-        try {
-            const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
-                method: 'PATCH',
-                headers: {
-                    'Authorization': `token ${GITHUB_TOKEN}`,
-                    'Accept': 'application/vnd.github.v3+json',
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    files: {
-                        [GIST_FILENAME]: {
-                            content: JSON.stringify(appData, null, 2)
-                        }
-                    }
-                })
-            });
-            
-            if (!response.ok) throw new Error(`GitHub API Error: ${response.status}`);
-            
-            syncBtn.innerHTML = '<i class="fas fa-check"></i>';
-            setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 2000);
-        } catch (error) {
-            console.error("Error saving to Gist:", error);
-            syncBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
-            setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 3000);
-        }
-    }, 1000);
-}
-
-async function syncFromCloud() {
-    if (!GITHUB_TOKEN || !GIST_ID) {
-        showToast("Please configure sync settings first.");
+signOutBtn.addEventListener('click', async () => {
+    signOutBtn.disabled = true;
+    const { error } = await supabaseClient.auth.signOut();
+    signOutBtn.disabled = false;
+    if (error) {
+        showToast(error.message);
         return;
     }
-    
-    syncBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-    
+    settingsModal.classList.remove('active');
+    endUserSession();
+});
+
+loginForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    loginError.textContent = '';
+    const submitButton = loginForm.querySelector('button[type="submit"]');
+    submitButton.disabled = true;
+    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in…';
+
+    const { data, error } = await supabaseClient.auth.signInWithPassword({
+        email: loginEmail.value.trim(),
+        password: loginPassword.value
+    });
+
+    submitButton.disabled = false;
+    submitButton.innerHTML = '<i class="fas fa-right-to-bracket"></i> Sign in';
+    if (error) {
+        loginError.textContent = error.message;
+        return;
+    }
+    loginPassword.value = '';
+    await startUserSession(data.user);
+});
+
+syncBtn.addEventListener('click', async () => {
+    await syncFromCloud(true);
+});
+
+async function startUserSession(user) {
+    if (!user || currentUser?.id === user.id) return;
+    currentUser = user;
+    cloudVersion = 0;
+    accountEmail.textContent = user.email || user.id;
+    authScreen.hidden = true;
+    appContainer.hidden = false;
+    loadLocalData();
+    ensureOrderField();
+    updateViewButtons();
+    renderPrompts();
+    populateCategories();
+    await syncFromCloud(false);
+}
+
+function endUserSession() {
+    currentUser = null;
+    cloudVersion = 0;
+    appData = normalizeData(null);
+    localStorage.removeItem('promptManagerData');
+    appContainer.hidden = true;
+    authScreen.hidden = false;
+    loginEmail.focus();
+}
+
+function queueCloudSave() {
+    if (!currentUser) return;
+    clearTimeout(syncTimeout);
+    syncTimeout = setTimeout(() => pushToCloud(true), 700);
+}
+
+function setCloudState(state, message) {
+    const icons = {
+        syncing: '<i class="fas fa-spinner fa-spin"></i>',
+        synced: '<i class="fas fa-check"></i>',
+        error: '<i class="fas fa-exclamation-triangle"></i>'
+    };
+    syncBtn.innerHTML = icons[state] || '<i class="fas fa-cloud"></i>';
+    cloudStatus.textContent = message;
+    if (state === 'synced') {
+        setTimeout(() => { syncBtn.innerHTML = '<i class="fas fa-cloud"></i>'; }, 1500);
+    }
+}
+
+async function pushToCloud(allowRetry) {
+    if (!currentUser) return;
+    if (syncInFlight) {
+        syncQueued = true;
+        return;
+    }
+    syncInFlight = true;
+    setCloudState('syncing', 'Saving…');
+
     try {
-        const response = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
-            headers: {
-                'Authorization': `token ${GITHUB_TOKEN}`,
-                'Accept': 'application/vnd.github.v3+json'
-            },
-            cache: 'no-store'
-        });
-        
-        if (!response.ok) throw new Error(`GitHub API Error: ${response.status}`);
-        
-        const gist = await response.json();
-        
-        if (gist.files && gist.files[GIST_FILENAME]) {
-            const content = gist.files[GIST_FILENAME].content;
-            const cloudData = JSON.parse(content);
-            
-            if (!cloudData.lastModified) {
-                // Handle legacy or empty
-                if (appData.prompts.length > 0) saveToGist();
-            } else {
-                // Compare timestamps
-                if (cloudData.lastModified > appData.lastModified) {
-                    appData = cloudData;
-                    ensureOrderField();
-                    localStorage.setItem('promptManagerData', JSON.stringify(appData));
-                    renderPrompts();
-                    populateCategories();
-                    showToast("Synced from cloud.");
-                } else if (appData.lastModified > cloudData.lastModified) {
-                    saveToGist();
-                    showToast("Synced to cloud.");
-                } else {
-                    showToast("Already up to date.");
-                }
-            }
-            
-            syncBtn.innerHTML = '<i class="fas fa-cloud"></i>';
-        } else {
-            saveToGist();
-        }
+        const { data, error } = await supabaseClient
+            .schema(SUPABASE_CONFIG.schema)
+            .rpc('save_data', {
+                expected_version: cloudVersion,
+                new_data: appData
+            });
+
+        if (error) throw error;
+        cloudVersion = Number(data);
+        setCloudState('synced', 'Synced');
     } catch (error) {
-        console.error("Error loading from Gist:", error);
-        syncBtn.innerHTML = '<i class="fas fa-exclamation-triangle"></i>';
-        setTimeout(() => syncBtn.innerHTML = '<i class="fas fa-cloud"></i>', 3000);
-        showToast("Sync failed. Check credentials.");
+        if (allowRetry && String(error.message).includes('PROMPTS_VERSION_CONFLICT')) {
+            syncInFlight = false;
+            await syncFromCloud(false);
+            return;
+        }
+        console.error('Error saving to Supabase:', error);
+        setCloudState('error', 'Sync failed');
+        showToast(`Cloud save failed: ${error.message}`);
+    } finally {
+        syncInFlight = false;
+        if (syncQueued) {
+            syncQueued = false;
+            queueCloudSave();
+        }
+    }
+}
+
+async function syncFromCloud(showSuccess) {
+    if (!currentUser) return;
+    if (syncInFlight) {
+        syncQueued = true;
+        return;
+    }
+    setCloudState('syncing', 'Checking…');
+
+    try {
+        const { data, error } = await supabaseClient
+            .schema(SUPABASE_CONFIG.schema)
+            .from('prompt_data')
+            .select('data, version')
+            .eq('user_id', currentUser.id)
+            .maybeSingle();
+
+        if (error) throw error;
+
+        if (!data) {
+            cloudVersion = 0;
+            await pushToCloud(false);
+            if (showSuccess) showToast('Cloud storage initialized.');
+            return;
+        }
+
+        const cloudData = normalizeData(data.data);
+        const merged = mergeData(appData, cloudData);
+        const needsCloudUpdate = JSON.stringify(merged) !== JSON.stringify(cloudData);
+        appData = merged;
+        cloudVersion = Number(data.version || 0);
+        ensureOrderField();
+        localStorage.setItem('promptManagerData', JSON.stringify(appData));
+        renderPrompts();
+        populateCategories();
+
+        if (needsCloudUpdate) {
+            await pushToCloud(true);
+        } else {
+            setCloudState('synced', 'Synced');
+        }
+        if (showSuccess) showToast('Cloud sync complete.');
+    } catch (error) {
+        console.error('Error loading from Supabase:', error);
+        setCloudState('error', 'Sync failed');
+        showToast(`Cloud sync failed: ${error.message}`);
     }
 }
 
