@@ -4,9 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Organize and securely sync reusable AI prompts.">
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
     <link rel="stylesheet" href="style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha384-3B6NwesSXE7YJlcLI9RpRqGf2p/EgVH8BgoKTaUrmKNDkHPStTQ3EyoYjCGXaOTS" crossorigin="anonymous">
 </head>
 <body>
     <section id="auth-screen" class="auth-screen">
@@ -115,9 +117,9 @@
                         <option value="custom">Custom Order</option>
                     </select>
                     <div class="view-switcher" role="group" aria-label="View mode">
-                        <button class="view-btn" id="view-large" title="Large Icons — full prompt" aria-label="Large Icons view" onclick="setView('large')"><i class="fas fa-table-cells-large"></i></button>
-                        <button class="view-btn" id="view-list" title="List — preview" aria-label="List view" onclick="setView('list')"><i class="fas fa-list"></i></button>
-                        <button class="view-btn" id="view-compact" title="Compact — dense" aria-label="Compact view" onclick="setView('compact')"><i class="fas fa-bars"></i></button>
+                        <button class="view-btn" id="view-large" data-view="large" title="Large Icons — full prompt" aria-label="Large Icons view"><i class="fas fa-table-cells-large"></i></button>
+                        <button class="view-btn" id="view-list" data-view="list" title="List — preview" aria-label="List view"><i class="fas fa-list"></i></button>
+                        <button class="view-btn" id="view-compact" data-view="compact" title="Compact — dense" aria-label="Compact view"><i class="fas fa-bars"></i></button>
                     </div>
                     <button class="btn" id="add-prompt-btn"><i class="fas fa-plus"></i> New Prompt</button>
                 </div>
@@ -128,7 +130,7 @@
             </div>
         </main>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="script.js?v=5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4" integrity="sha384-yiVMs0R/Jyz7OhoXa/DsEMUSBLjEhr/QJta2ONO+zB6I8/GmNg/7AUFrZmAJV7KV" crossorigin="anonymous"></script>
+    <script src="script.js?v=6"></script>
 </body>
 </html>

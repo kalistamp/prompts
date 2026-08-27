@@ -6,6 +6,14 @@ const SUPABASE_CONFIG = {
     schema: "prompts"
 };
 
+const LOCAL_DB_NAME = 'prompt-studio';
+const LOCAL_DB_VERSION = 1;
+const DELTA_PAGE_SIZE = 500;
+const PROMPT_COLUMNS = [
+    'id', 'title', 'prompt_text', 'category', 'tags', 'notes', 'pinned',
+    'created_at', 'updated_at', 'sort_order', 'deleted_at', 'revision'
+].join(',');
+
 // Label for the virtual "Pinned" section rendered above the real categories.
 // It is a display shortcut only — pinned prompts still live in (and also
 // render inside) their own category.
@@ -20,10 +28,15 @@ let appData = {
 let editState = { isEditing: false, id: null };
 let supabaseClient = null;
 let currentUser = null;
-let cloudVersion = 0;
 let syncTimeout = null;
-let syncInFlight = false;
-let syncQueued = false;
+let cloudRevision = 0;
+let pullPromise = null;
+let flushPromise = null;
+let sessionStartPromise = null;
+let localDbPromise = null;
+let localWriteQueue = Promise.resolve();
+let pendingMutations = new Map();
+let mutationSequence = 0;
 
 // View state: 'large' (Large Icons), 'list' (List), 'compact' (Compact)
 let currentView = localStorage.getItem('promptManagerView') || 'large';
@@ -141,23 +154,156 @@ themeToggle.addEventListener('click', () => {
 });
 
 // Data Management
-function loadLocalData() {
+function openLocalDb() {
+    if (localDbPromise) return localDbPromise;
+    localDbPromise = new Promise((resolve, reject) => {
+        const request = indexedDB.open(LOCAL_DB_NAME, LOCAL_DB_VERSION);
+        request.onerror = () => reject(request.error);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains('prompts')) {
+                const store = db.createObjectStore('prompts', { keyPath: ['userId', 'id'] });
+                store.createIndex('by_user', 'userId', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('outbox')) {
+                const store = db.createObjectStore('outbox', { keyPath: ['userId', 'id'] });
+                store.createIndex('by_user', 'userId', { unique: false });
+            }
+            if (!db.objectStoreNames.contains('meta')) {
+                db.createObjectStore('meta', { keyPath: 'userId' });
+            }
+        };
+        request.onsuccess = () => resolve(request.result);
+    });
+    return localDbPromise;
+}
+
+function idbRequest(request) {
+    return new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function idbTransactionDone(transaction) {
+    return new Promise((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error || new Error('Local database transaction aborted.'));
+    });
+}
+
+async function readUserStore(storeName, userId) {
+    const db = await openLocalDb();
+    const transaction = db.transaction(storeName, 'readonly');
+    const request = transaction.objectStore(storeName).index('by_user').getAll(IDBKeyRange.only(userId));
+    const rows = await idbRequest(request);
+    await idbTransactionDone(transaction);
+    return rows;
+}
+
+function persistLocalBatch({ upserts = [], deletes = [], outboxPuts = [], outboxDeletes = [], revision = cloudRevision } = {}) {
+    const userId = currentUser?.id;
+    if (!userId) return Promise.resolve();
+
+    localWriteQueue = localWriteQueue
+        .catch(error => console.error('Previous local database write failed:', error))
+        .then(async () => {
+            const db = await openLocalDb();
+            const transaction = db.transaction(['prompts', 'outbox', 'meta'], 'readwrite');
+            const promptStore = transaction.objectStore('prompts');
+            const outboxStore = transaction.objectStore('outbox');
+
+            upserts.forEach(prompt => promptStore.put({ ...prompt, userId }));
+            deletes.forEach(id => promptStore.delete([userId, Number(id)]));
+            outboxPuts.forEach(mutation => outboxStore.put({ ...mutation, userId }));
+            outboxDeletes.forEach(id => outboxStore.delete([userId, Number(id)]));
+            transaction.objectStore('meta').put({ userId, cloudRevision: Number(revision || 0) });
+            await idbTransactionDone(transaction);
+        });
+    return localWriteQueue;
+}
+
+async function loadLocalData() {
+    appData = normalizeData(null);
+    cloudRevision = 0;
+    pendingMutations = new Map();
+
     try {
-        const stored = localStorage.getItem('promptManagerData');
-        if (stored) {
-            appData = normalizeData(JSON.parse(stored));
-        } else {
-            appData = normalizeData(null);
+        const db = await openLocalDb();
+        const [promptRows, outboxRows] = await Promise.all([
+            readUserStore('prompts', currentUser.id),
+            readUserStore('outbox', currentUser.id)
+        ]);
+        const metaTransaction = db.transaction('meta', 'readonly');
+        const meta = await idbRequest(metaTransaction.objectStore('meta').get(currentUser.id));
+        await idbTransactionDone(metaTransaction);
+
+        appData.prompts = promptRows.map(({ userId, ...prompt }) => normalizeData({ prompts: [prompt] }).prompts[0]);
+        pendingMutations = new Map(outboxRows.map(({ userId, ...mutation }) => [Number(mutation.id), mutation]));
+        cloudRevision = Number(meta?.cloudRevision || 0);
+
+        // One-time migration from the former whole-document localStorage cache.
+        const legacyRaw = localStorage.getItem('promptManagerData');
+        if (legacyRaw && appData.prompts.length === 0 && pendingMutations.size === 0) {
+            const legacy = normalizeData(JSON.parse(legacyRaw));
+            appData = legacy;
+            const changes = legacy.prompts.map(prompt => createUpsertMutation(prompt));
+            const deletions = legacy.deleted.map(item => createDeleteMutation({
+                id: item.id,
+                deletedAt: item.deletedAt,
+                revision: 0
+            }));
+            [...changes, ...deletions].forEach(mutation => pendingMutations.set(mutation.id, mutation));
+            await persistLocalBatch({
+                upserts: legacy.prompts,
+                outboxPuts: [...changes, ...deletions]
+            });
         }
-    } catch (e) {
-        console.error("Error loading local data", e);
+        localStorage.removeItem('promptManagerData');
+    } catch (error) {
+        console.error('Error loading local data:', error);
         appData = normalizeData(null);
+        cloudRevision = 0;
+        pendingMutations = new Map();
+        showToast('Local offline storage is unavailable; cloud sync will still work for this session.');
     }
 }
 
-function saveLocalData() {
+function createUpsertMutation(prompt, expectedRevision = null) {
+    const previous = pendingMutations.get(Number(prompt.id));
+    return {
+        id: Number(prompt.id),
+        action: 'upsert',
+        expectedRevision: Number(expectedRevision ?? previous?.expectedRevision ?? prompt.revision ?? 0),
+        prompt: { ...prompt },
+        mutationId: `${Date.now()}-${++mutationSequence}`
+    };
+}
+
+function createDeleteMutation({ id, deletedAt, revision }) {
+    const previous = pendingMutations.get(Number(id));
+    return {
+        id: Number(id),
+        action: 'delete',
+        deletedAt: Number(deletedAt || Date.now()),
+        expectedRevision: Number(previous?.expectedRevision ?? revision ?? 0),
+        mutationId: `${Date.now()}-${++mutationSequence}`
+    };
+}
+
+function saveLocalData(changedPrompts = [], deletedRecords = []) {
     appData.lastModified = Date.now();
-    localStorage.setItem('promptManagerData', JSON.stringify(appData));
+    const mutations = [
+        ...changedPrompts.map(prompt => createUpsertMutation(prompt)),
+        ...deletedRecords.map(record => createDeleteMutation(record))
+    ];
+    mutations.forEach(mutation => pendingMutations.set(mutation.id, mutation));
+    void persistLocalBatch({
+        upserts: changedPrompts,
+        deletes: deletedRecords.map(record => record.id),
+        outboxPuts: mutations
+    });
     populateCategories();
     queueCloudSave();
 }
@@ -176,7 +322,8 @@ function normalizeData(raw) {
             pinned: Boolean(p.pinned),
             createdAt: Number(p.createdAt || p.id || Date.now()),
             updatedAt: Number(p.updatedAt || p.createdAt || p.id || Date.now()),
-            order: Number.isFinite(Number(p.order)) ? Number(p.order) : Number(p.createdAt || p.id || Date.now())
+            order: Number.isFinite(Number(p.order)) ? Number(p.order) : Number(p.createdAt || p.id || Date.now()),
+            revision: Number(p.revision || 0)
         }))
         : [];
     const deleted = Array.isArray(source.deleted)
@@ -189,33 +336,6 @@ function normalizeData(raw) {
         lastModified: Number(source.lastModified || 0),
         prompts,
         deleted
-    };
-}
-
-function mergeData(localValue, cloudValue) {
-    const local = normalizeData(localValue);
-    const cloud = normalizeData(cloudValue);
-    const promptsById = new Map();
-    const deletedById = new Map();
-
-    [...cloud.prompts, ...local.prompts].forEach(prompt => {
-        const existing = promptsById.get(prompt.id);
-        if (!existing || prompt.updatedAt >= existing.updatedAt) promptsById.set(prompt.id, prompt);
-    });
-    [...cloud.deleted, ...local.deleted].forEach(item => {
-        const existing = deletedById.get(item.id) || 0;
-        if (item.deletedAt > existing) deletedById.set(item.id, item.deletedAt);
-    });
-
-    const prompts = [...promptsById.values()].filter(prompt => {
-        const deletedAt = deletedById.get(prompt.id) || 0;
-        return prompt.updatedAt > deletedAt;
-    });
-
-    return {
-        lastModified: Math.max(local.lastModified, cloud.lastModified),
-        prompts,
-        deleted: [...deletedById].map(([id, deletedAt]) => ({ id, deletedAt }))
     };
 }
 
@@ -436,15 +556,15 @@ function createItem(p, cat, canReorder, idx, total) {
     const counts = countsFor(p.text);
 
     const reorderBtns = canReorder ? `
-        <button class="tool-btn" onclick="movePrompt(${p.id}, -1)" title="Move up" aria-label="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
-        <button class="tool-btn" onclick="movePrompt(${p.id}, 1)" title="Move down" aria-label="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>` : '';
+        <button class="tool-btn" data-action="move" data-id="${p.id}" data-direction="-1" title="Move up" aria-label="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
+        <button class="tool-btn" data-action="move" data-id="${p.id}" data-direction="1" title="Move down" aria-label="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>` : '';
 
     // Pin/unpin star. Solid amber star = pinned; hollow star = not pinned.
-    const pinBtn = `<button class="tool-btn pin-btn${p.pinned ? ' pinned' : ''}" onclick="togglePin(${p.id})" title="${p.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${p.pinned ? 'Unpin' : 'Pin to top'}" aria-pressed="${p.pinned ? 'true' : 'false'}"><i class="${p.pinned ? 'fas' : 'far'} fa-star"></i></button>`;
+    const pinBtn = `<button class="tool-btn pin-btn${p.pinned ? ' pinned' : ''}" data-action="pin" data-id="${p.id}" title="${p.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${p.pinned ? 'Unpin' : 'Pin to top'}" aria-pressed="${p.pinned ? 'true' : 'false'}"><i class="${p.pinned ? 'fas' : 'far'} fa-star"></i></button>`;
 
     // Large view gets a prominent Copy button in the footer, so the tools row
     // there is edit/delete only. List/compact keep copy in the tools row.
-    const copyInTools = largeView ? '' : `<button class="tool-btn" onclick="copyPrompt(${p.id})" title="Copy"><i class="fas fa-copy"></i></button>`;
+    const copyInTools = largeView ? '' : `<button class="tool-btn" data-action="copy" data-id="${p.id}" title="Copy"><i class="fas fa-copy"></i></button>`;
 
     item.innerHTML = `
         <div class="item-top">
@@ -458,17 +578,17 @@ function createItem(p, cat, canReorder, idx, total) {
                 ${reorderBtns}
                 ${pinBtn}
                 ${copyInTools}
-                <button class="tool-btn" onclick="editPrompt(${p.id})" title="Edit"><i class="fas fa-edit"></i></button>
-                <button class="tool-btn danger" onclick="deletePrompt(${p.id})" title="Delete"><i class="fas fa-trash"></i></button>
+                <button class="tool-btn" data-action="edit" data-id="${p.id}" title="Edit"><i class="fas fa-edit"></i></button>
+                <button class="tool-btn danger" data-action="delete" data-id="${p.id}" title="Delete"><i class="fas fa-trash"></i></button>
             </div>
         </div>
         ${tagsHtml ? `<div class="item-tags">${tagsHtml}</div>` : ''}
         <div class="prompt-body">${escapeHtml(p.text)}</div>
-        ${needsToggle ? `<button class="preview-toggle" onclick="toggleExpand(${p.id})">${expanded
+        ${needsToggle ? `<button class="preview-toggle" data-action="expand" data-id="${p.id}">${expanded
             ? '<i class="fas fa-chevron-up"></i> Show less'
             : '<i class="fas fa-chevron-down"></i> Show more'}</button>` : ''}
         ${largeView ? `<div class="item-footer">
-            <button class="copy-btn" onclick="copyPrompt(${p.id})"><i class="fas fa-copy"></i> Copy</button>
+            <button class="copy-btn" data-action="copy" data-id="${p.id}"><i class="fas fa-copy"></i> Copy</button>
             <span class="item-meta"><span class="item-counts">${counts}</span>${updated ? ` · Updated ${updated}` : ''}</span>
         </div>` : ''}
     `;
@@ -526,7 +646,7 @@ window.togglePin = function(id) {
     if (!prompt) return;
     prompt.pinned = !prompt.pinned;
     prompt.updatedAt = Date.now();
-    saveLocalData();
+    saveLocalData([prompt]);
     renderPrompts();
     showToast(prompt.pinned ? "Pinned to top." : "Unpinned.");
 };
@@ -582,18 +702,23 @@ function endPointerDrag() {
     commitOrder(category, orderedIds);
 }
 
-// Writes a new order to every prompt in the category based on DOM sequence,
-// persists (which pushes to Supabase), and re-renders to refresh arrow states.
+// Persists only rows whose order actually changed, then re-renders to refresh
+// arrow states. Row-level cloud sync avoids rewriting unrelated prompts.
 function commitOrder(category, orderedIds) {
     const indexById = new Map(orderedIds.map((id, i) => [id, i]));
     const changedAt = Date.now();
+    const changedPrompts = [];
     appData.prompts.forEach(p => {
         if ((p.category || 'Uncategorized') === category && indexById.has(p.id)) {
-            p.order = indexById.get(p.id);
-            p.updatedAt = changedAt;
+            const nextOrder = indexById.get(p.id);
+            if (p.order !== nextOrder) {
+                p.order = nextOrder;
+                p.updatedAt = changedAt;
+                changedPrompts.push(p);
+            }
         }
     });
-    saveLocalData();
+    if (changedPrompts.length) saveLocalData(changedPrompts);
     renderPrompts();
 }
 
@@ -616,7 +741,7 @@ window.movePrompt = function(id, direction) {
     catPrompts[idx].updatedAt = changedAt;
     catPrompts[swapIdx].updatedAt = changedAt;
 
-    saveLocalData();
+    saveLocalData([catPrompts[idx], catPrompts[swapIdx]]);
     renderPrompts();
 };
 
@@ -633,12 +758,12 @@ window.copyPrompt = function(id) {
 
 window.deletePrompt = function(id) {
     if (confirm("Are you sure you want to delete this prompt?")) {
+        const prompt = appData.prompts.find(p => p.id === id);
+        if (!prompt) return;
         const deletedAt = Date.now();
         appData.prompts = appData.prompts.filter(p => p.id !== id);
-        appData.deleted = appData.deleted.filter(item => item.id !== id);
-        appData.deleted.push({ id, deletedAt });
         expandedIds.delete(id);
-        saveLocalData();
+        saveLocalData([], [{ id, deletedAt, revision: prompt.revision || 0 }]);
         renderPrompts();
     }
 }
@@ -659,6 +784,27 @@ window.editPrompt = function(id) {
 }
 
 // Event Listeners
+document.querySelectorAll('.view-btn[data-view]').forEach(button => {
+    button.addEventListener('click', () => window.setView(button.dataset.view));
+});
+
+promptsContainer.addEventListener('click', event => {
+    const button = event.target.closest('button[data-action]');
+    if (!button || !promptsContainer.contains(button)) return;
+    const id = Number(button.dataset.id);
+    if (!Number.isFinite(id)) return;
+
+    const actions = {
+        move: () => window.movePrompt(id, Number(button.dataset.direction)),
+        pin: () => window.togglePin(id),
+        copy: () => window.copyPrompt(id),
+        edit: () => window.editPrompt(id),
+        delete: () => window.deletePrompt(id),
+        expand: () => window.toggleExpand(id)
+    };
+    actions[button.dataset.action]?.();
+});
+
 searchInput.addEventListener('input', () => {
     clearSearchBtn.style.display = searchInput.value.length > 0 ? 'flex' : 'none';
     renderPrompts();
@@ -701,25 +847,28 @@ promptForm.addEventListener('submit', (e) => {
         updatedAt: Date.now()
     };
 
+    let savedPrompt;
     if (editState.isEditing) {
         appData.prompts = appData.prompts.map(p => {
             if (p.id === editState.id) {
-                return { ...p, ...promptData };
+                savedPrompt = { ...p, ...promptData };
+                return savedPrompt;
             }
             return p;
         });
     } else {
         const newId = Date.now();
-        appData.deleted = appData.deleted.filter(item => item.id !== newId);
-        appData.prompts.push({
+        savedPrompt = {
             ...promptData,
             id: newId,
             createdAt: newId,
-            order: newId // sorts after existing (typically smaller) order values in Custom Order
-        });
+            order: newId, // sorts after existing (typically smaller) order values in Custom Order
+            revision: 0
+        };
+        appData.prompts.push(savedPrompt);
     }
 
-    saveLocalData();
+    saveLocalData([savedPrompt]);
     renderPrompts();
     promptModal.classList.remove('active');
 });
@@ -778,28 +927,38 @@ syncBtn.addEventListener('click', async () => {
     await syncFromCloud(true);
 });
 
-async function startUserSession(user) {
-    if (!user) throw new Error('No authenticated user session was returned.');
+function startUserSession(user) {
+    if (!user) return Promise.reject(new Error('No authenticated user session was returned.'));
+    if (currentUser?.id === user.id && sessionStartPromise) return sessionStartPromise;
     if (currentUser?.id === user.id) {
         document.body.classList.add('is-authenticated');
         authScreen.hidden = true;
         appContainer.hidden = false;
-        return;
+        return Promise.resolve();
     }
     currentUser = user;
-    cloudVersion = 0;
+    cloudRevision = 0;
     accountEmail.textContent = user.email || user.id;
     document.body.classList.add('is-authenticated');
     authScreen.hidden = true;
     appContainer.hidden = false;
-    loadLocalData();
-    ensureOrderField();
-    updateViewButtons();
-    renderPrompts();
-    populateCategories();
-    // Do not hold the login screen open while cloud data loads. Sync errors are
-    // reported inside syncFromCloud and the locally cached app remains usable.
-    void syncFromCloud(false);
+    const userId = user.id;
+    const task = (async () => {
+        await loadLocalData();
+        if (currentUser?.id !== userId) return;
+        ensureOrderField();
+        updateViewButtons();
+        renderPrompts();
+        populateCategories();
+        // Do not hold the login screen open while cloud data loads. Sync errors
+        // are reported inside syncFromCloud and cached data remains usable.
+        void syncFromCloud(false);
+    })();
+    const trackedTask = task.finally(() => {
+        if (sessionStartPromise === trackedTask) sessionStartPromise = null;
+    });
+    sessionStartPromise = trackedTask;
+    return trackedTask;
 }
 
 function withTimeout(promise, milliseconds) {
@@ -811,20 +970,46 @@ function withTimeout(promise, milliseconds) {
 }
 
 function endUserSession() {
+    const previousUserId = currentUser?.id;
     currentUser = null;
-    cloudVersion = 0;
+    sessionStartPromise = null;
+    cloudRevision = 0;
+    pendingMutations = new Map();
+    clearTimeout(syncTimeout);
     appData = normalizeData(null);
     localStorage.removeItem('promptManagerData');
+    if (previousUserId) void clearLocalUserData(previousUserId);
     document.body.classList.remove('is-authenticated');
     appContainer.hidden = true;
     authScreen.hidden = false;
     loginEmail.focus();
 }
 
-function queueCloudSave() {
+async function clearLocalUserData(userId) {
+    try {
+        await localWriteQueue.catch(() => {});
+        const db = await openLocalDb();
+        const transaction = db.transaction(['prompts', 'outbox', 'meta'], 'readwrite');
+        ['prompts', 'outbox'].forEach(storeName => {
+            const request = transaction.objectStore(storeName).index('by_user').openCursor(IDBKeyRange.only(userId));
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) return;
+                cursor.delete();
+                cursor.continue();
+            };
+        });
+        transaction.objectStore('meta').delete(userId);
+        await idbTransactionDone(transaction);
+    } catch (error) {
+        console.error('Unable to clear local user data:', error);
+    }
+}
+
+function queueCloudSave(delay = 700) {
     if (!currentUser) return;
     clearTimeout(syncTimeout);
-    syncTimeout = setTimeout(() => pushToCloud(true), 700);
+    syncTimeout = setTimeout(() => { void flushPendingChanges(); }, delay);
 }
 
 function setCloudState(state, message) {
@@ -840,89 +1025,245 @@ function setCloudState(state, message) {
     }
 }
 
-async function pushToCloud(allowRetry) {
-    if (!currentUser) return;
-    if (syncInFlight) {
-        syncQueued = true;
-        return;
+function promptFromCloudRow(row) {
+    return normalizeData({ prompts: [{
+        id: row.id,
+        title: row.title,
+        text: row.prompt_text,
+        category: row.category,
+        tags: row.tags,
+        notes: row.notes,
+        pinned: row.pinned,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        order: row.sort_order,
+        revision: row.revision
+    }] }).prompts[0];
+}
+
+function mutationToPayload(mutation) {
+    if (mutation.action === 'delete') {
+        return {
+            id: mutation.id,
+            action: 'delete',
+            expected_revision: mutation.expectedRevision,
+            deleted_at: mutation.deletedAt
+        };
     }
-    syncInFlight = true;
+
+    const prompt = mutation.prompt;
+    return {
+        id: mutation.id,
+        action: 'upsert',
+        expected_revision: mutation.expectedRevision,
+        title: prompt.title,
+        text: prompt.text,
+        category: prompt.category || '',
+        tags: prompt.tags || [],
+        notes: prompt.notes || '',
+        pinned: Boolean(prompt.pinned),
+        created_at: prompt.createdAt,
+        updated_at: prompt.updatedAt,
+        sort_order: prompt.order
+    };
+}
+
+function nextMutationBatch() {
+    const batch = [];
+    let encodedBytes = 2;
+    for (const mutation of pendingMutations.values()) {
+        const payload = mutationToPayload(mutation);
+        const payloadBytes = new Blob([JSON.stringify(payload)]).size + 1;
+        if (batch.length && (batch.length >= 100 || encodedBytes + payloadBytes > 900000)) break;
+        batch.push({ mutation, payload });
+        encodedBytes += payloadBytes;
+    }
+    return batch;
+}
+
+function flushPendingChanges() {
+    if (!currentUser || pendingMutations.size === 0) return Promise.resolve();
+    if (flushPromise) return flushPromise;
+
+    let retryImmediately = false;
+    const task = performCloudFlush()
+        .then(shouldRetry => { retryImmediately = Boolean(shouldRetry); })
+        .finally(() => {
+            if (flushPromise === task) flushPromise = null;
+            if (retryImmediately && currentUser && pendingMutations.size > 0) queueCloudSave(0);
+        });
+    flushPromise = task;
+    return task;
+}
+
+async function performCloudFlush() {
+    if (pullPromise) await pullPromise;
+    if (!currentUser || pendingMutations.size === 0) return false;
+
+    const userId = currentUser.id;
+    const batch = nextMutationBatch();
+    if (!batch.length) return false;
     setCloudState('syncing', 'Saving…');
 
     try {
+        await localWriteQueue.catch(() => {});
         const { data, error } = await supabaseClient
             .schema(SUPABASE_CONFIG.schema)
-            .rpc('save_data', {
-                expected_version: cloudVersion,
-                new_data: appData
+            .rpc('apply_prompt_changes', {
+                changes: batch.map(item => item.payload)
             });
-
         if (error) throw error;
-        cloudVersion = Number(data);
+        if (currentUser?.id !== userId) return false;
+
+        const resultsById = new Map((data || []).map(row => [Number(row.prompt_id), row]));
+        const outboxDeletes = [];
+        const outboxPuts = [];
+        const localUpserts = [];
+
+        batch.forEach(({ mutation }) => {
+            const result = resultsById.get(mutation.id);
+            if (!result) return;
+            cloudRevision = Math.max(cloudRevision, Number(result.new_revision || 0));
+
+            const currentMutation = pendingMutations.get(mutation.id);
+            const localPrompt = appData.prompts.find(prompt => prompt.id === mutation.id);
+            if (localPrompt) {
+                localPrompt.revision = Number(result.new_revision || 0);
+                localUpserts.push(localPrompt);
+            }
+
+            if (currentMutation?.mutationId === mutation.mutationId) {
+                pendingMutations.delete(mutation.id);
+                outboxDeletes.push(mutation.id);
+            } else if (currentMutation) {
+                currentMutation.expectedRevision = Number(result.new_revision || 0);
+                if (currentMutation.prompt) currentMutation.prompt.revision = Number(result.new_revision || 0);
+                outboxPuts.push(currentMutation);
+            }
+        });
+
+        await persistLocalBatch({
+            upserts: localUpserts,
+            outboxPuts,
+            outboxDeletes,
+            revision: cloudRevision
+        });
         setCloudState('synced', 'Synced');
+        return pendingMutations.size > 0;
     } catch (error) {
-        if (allowRetry && String(error.message).includes('PROMPTS_VERSION_CONFLICT')) {
-            syncInFlight = false;
-            await syncFromCloud(false);
-            return;
+        if (String(error.message).includes('PROMPT_VERSION_CONFLICT') || error.code === '40001') {
+            // Pull a full, authoritative revision snapshot. Pending local rows
+            // remain in the outbox and are rebased before the queued retry.
+            return await syncFromCloud(false, true, true);
         }
         console.error('Error saving to Supabase:', error);
         setCloudState('error', 'Sync failed');
-        showToast(`Cloud save failed: ${error.message}`);
-    } finally {
-        syncInFlight = false;
-        if (syncQueued) {
-            syncQueued = false;
-            queueCloudSave();
-        }
+        showToast('Cloud save failed. Your changes remain queued locally.');
+        return false;
     }
 }
 
-async function syncFromCloud(showSuccess) {
-    if (!currentUser) return;
-    if (syncInFlight) {
-        syncQueued = true;
-        return;
+function syncFromCloud(showSuccess = false, forceFull = false, fromConflict = false) {
+    if (!currentUser) return Promise.resolve();
+
+    if (!pullPromise) {
+        const task = performCloudPull(forceFull, fromConflict).finally(() => {
+            if (pullPromise === task) pullPromise = null;
+            if (currentUser && pendingMutations.size > 0) queueCloudSave(0);
+        });
+        pullPromise = task;
     }
+
+    return pullPromise.then(() => {
+        if (showSuccess) showToast('Cloud sync complete.');
+        return true;
+    }).catch(() => {
+        // performCloudPull already recorded the diagnostic and preserved the
+        // local cache. Keep event-handler callers from producing an unhandled
+        // promise rejection while the user is offline.
+        return false;
+    });
+}
+
+async function performCloudPull(forceFull, fromConflict) {
+    if (flushPromise && !fromConflict) await flushPromise;
+    if (!currentUser) return;
+
+    const userId = currentUser.id;
+    const startingRevision = forceFull ? 0 : cloudRevision;
+    let pageCursor = startingRevision;
+    let newestRevision = cloudRevision;
+    const localUpserts = new Map();
+    const localDeletes = new Set();
+    const outboxPuts = new Map();
+    let changed = false;
     setCloudState('syncing', 'Checking…');
 
     try {
-        const { data, error } = await supabaseClient
-            .schema(SUPABASE_CONFIG.schema)
-            .from('prompt_data')
-            .select('data, version')
-            .eq('user_id', currentUser.id)
-            .maybeSingle();
+        while (true) {
+            const { data, error } = await supabaseClient
+                .schema(SUPABASE_CONFIG.schema)
+                .from('prompt_items')
+                .select(PROMPT_COLUMNS)
+                .eq('user_id', userId)
+                .gt('revision', pageCursor)
+                .order('revision', { ascending: true })
+                .limit(DELTA_PAGE_SIZE);
+            if (error) throw error;
+            if (currentUser?.id !== userId) return;
+            if (!data?.length) break;
 
-        if (error) throw error;
+            data.forEach(row => {
+                const id = Number(row.id);
+                const revision = Number(row.revision || 0);
+                pageCursor = Math.max(pageCursor, revision);
+                newestRevision = Math.max(newestRevision, revision);
+                const pending = pendingMutations.get(id);
 
-        if (!data) {
-            cloudVersion = 0;
-            await pushToCloud(false);
-            if (showSuccess) showToast('Cloud storage initialized.');
-            return;
+                if (pending) {
+                    pending.expectedRevision = revision;
+                    if (pending.prompt) pending.prompt.revision = revision;
+                    const localPrompt = appData.prompts.find(prompt => prompt.id === id);
+                    if (localPrompt) localPrompt.revision = revision;
+                    outboxPuts.set(id, pending);
+                    return;
+                }
+
+                const existingIndex = appData.prompts.findIndex(prompt => prompt.id === id);
+                if (row.deleted_at !== null) {
+                    if (existingIndex >= 0) appData.prompts.splice(existingIndex, 1);
+                    localDeletes.add(id);
+                } else {
+                    const cloudPrompt = promptFromCloudRow(row);
+                    if (existingIndex >= 0) appData.prompts[existingIndex] = cloudPrompt;
+                    else appData.prompts.push(cloudPrompt);
+                    localUpserts.set(id, cloudPrompt);
+                }
+                changed = true;
+            });
+
+            if (data.length < DELTA_PAGE_SIZE) break;
         }
 
-        const cloudData = normalizeData(data.data);
-        const merged = mergeData(appData, cloudData);
-        const needsCloudUpdate = JSON.stringify(merged) !== JSON.stringify(cloudData);
-        appData = merged;
-        cloudVersion = Number(data.version || 0);
-        ensureOrderField();
-        localStorage.setItem('promptManagerData', JSON.stringify(appData));
-        renderPrompts();
-        populateCategories();
+        cloudRevision = newestRevision;
+        await persistLocalBatch({
+            upserts: [...localUpserts.values()],
+            deletes: [...localDeletes],
+            outboxPuts: [...outboxPuts.values()],
+            revision: cloudRevision
+        });
 
-        if (needsCloudUpdate) {
-            await pushToCloud(true);
-        } else {
-            setCloudState('synced', 'Synced');
+        if (changed) {
+            ensureOrderField();
+            renderPrompts();
+            populateCategories();
         }
-        if (showSuccess) showToast('Cloud sync complete.');
+        setCloudState('synced', 'Synced');
     } catch (error) {
         console.error('Error loading from Supabase:', error);
         setCloudState('error', 'Sync failed');
-        showToast(`Cloud sync failed: ${error.message}`);
+        showToast('Cloud sync failed. Locally cached prompts remain available.');
+        throw error;
     }
 }
 
