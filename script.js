@@ -37,6 +37,10 @@ let localDbPromise = null;
 let localWriteQueue = Promise.resolve();
 let pendingMutations = new Map();
 let mutationSequence = 0;
+let selectedPromptId = null;
+let showPinnedOnly = false;
+let lastFocusedElement = null;
+let pendingDeleteId = null;
 
 // View state: 'large' (Large Icons), 'list' (List), 'compact' (Compact)
 let currentView = localStorage.getItem('promptManagerView') || 'large';
@@ -88,6 +92,11 @@ const promptTags = document.getElementById('prompt-tags');
 const promptText = document.getElementById('prompt-text');
 const promptNotes = document.getElementById('prompt-notes');
 const closePromptBtn = document.getElementById('close-prompt-btn');
+const closePromptIcon = document.getElementById('close-prompt-icon');
+const closeSettingsIcon = document.getElementById('close-settings-icon');
+const deleteModal = document.getElementById('delete-modal');
+const cancelDeleteBtn = document.getElementById('cancel-delete-btn');
+const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
 
 const promptsContainer = document.getElementById('prompts-container');
 const searchInput = document.getElementById('search-input');
@@ -95,6 +104,25 @@ const clearSearchBtn = document.getElementById('clear-search-btn');
 const categoryFilter = document.getElementById('category-filter');
 const sortSelect = document.getElementById('sort-select');
 const categoryList = document.getElementById('category-list');
+const editorCount = document.getElementById('editor-count');
+const workspaceSidebar = document.getElementById('workspace-sidebar');
+const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+const sidebarCloseBtn = document.getElementById('sidebar-close-btn');
+const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+const sidebarCategories = document.getElementById('sidebar-categories');
+const allPromptsCount = document.getElementById('all-prompts-count');
+const pinnedPromptsCount = document.getElementById('pinned-prompts-count');
+const sidebarSyncBtn = document.getElementById('sidebar-sync-btn');
+const sidebarSyncLabel = document.getElementById('sidebar-sync-label');
+const sidebarStatusDot = document.getElementById('sidebar-status-dot');
+const sidebarAccountEmail = document.getElementById('sidebar-account-email');
+const currentViewTitle = document.getElementById('current-view-title');
+const currentResultCount = document.getElementById('current-result-count');
+const saveState = document.getElementById('save-state');
+const saveStateLabel = document.getElementById('save-state-label');
+const detailPanel = document.getElementById('detail-panel');
+const detailEmpty = document.getElementById('detail-empty');
+const detailContent = document.getElementById('detail-content');
 
 // Initialize
 async function init() {
@@ -134,23 +162,29 @@ function initTheme() {
     const savedTheme = localStorage.getItem('theme');
     if (savedTheme === 'dark') {
         document.body.setAttribute('data-theme', 'dark');
-        themeToggle.innerHTML = '<i class="fas fa-sun"></i>';
     } else {
         document.body.removeAttribute('data-theme');
-        themeToggle.innerHTML = '<i class="fas fa-moon"></i>';
     }
+    updateThemeUI();
+}
+
+function updateThemeUI() {
+    const isDark = document.body.getAttribute('data-theme') === 'dark';
+    themeToggle.innerHTML = `<i class="fas fa-${isDark ? 'sun' : 'moon'}"></i>`;
+    themeToggle.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    if (themeMeta) themeMeta.content = isDark ? '#0b1120' : '#f5f7fb';
 }
 
 themeToggle.addEventListener('click', () => {
     if (document.body.getAttribute('data-theme') === 'dark') {
         document.body.removeAttribute('data-theme');
         localStorage.setItem('theme', 'light');
-        themeToggle.innerHTML = '<i class="fas fa-moon"></i>';
     } else {
         document.body.setAttribute('data-theme', 'dark');
         localStorage.setItem('theme', 'dark');
-        themeToggle.innerHTML = '<i class="fas fa-sun"></i>';
     }
+    updateThemeUI();
 });
 
 // Data Management
@@ -369,23 +403,42 @@ function renderPrompts() {
     const searchTerm = searchInput.value.toLowerCase();
     const category = categoryFilter.value;
     const sort = sortSelect.value;
-    const isFiltering = searchTerm.length > 0 || category !== '';
+    const isFiltering = searchTerm.length > 0 || category !== '' || showPinnedOnly;
     // Reordering is only active in Custom Order and only on an unfiltered list
     // (reordering a filtered subset would silently move hidden items).
     const canReorder = sort === 'custom' && !isFiltering;
 
     const filtered = appData.prompts.filter(p => {
         const matchesSearch = p.title.toLowerCase().includes(searchTerm) ||
-                              p.text.toLowerCase().includes(searchTerm) ||
-                              (p.tags && p.tags.some(t => t.toLowerCase().includes(searchTerm)));
+                               p.text.toLowerCase().includes(searchTerm) ||
+                               p.category.toLowerCase().includes(searchTerm) ||
+                               p.notes.toLowerCase().includes(searchTerm) ||
+                               (p.tags && p.tags.some(t => t.toLowerCase().includes(searchTerm)));
         const matchesCategory = category === "" || p.category === category;
-        return matchesSearch && matchesCategory;
+        const matchesPinned = !showPinnedOnly || p.pinned;
+        return matchesSearch && matchesCategory && matchesPinned;
     });
 
     promptsContainer.innerHTML = '';
+    updateWorkspaceNavigation(filtered.length, category, searchTerm);
+
+    if (selectedPromptId && !filtered.some(prompt => prompt.id === selectedPromptId)) {
+        selectedPromptId = null;
+    }
+    if (!selectedPromptId && filtered.length && window.matchMedia('(min-width: 1000px)').matches) {
+        selectedPromptId = filtered[0].id;
+    }
 
     if (filtered.length === 0) {
-        promptsContainer.innerHTML = '<p class="empty-state">No prompts found. Create one with “New Prompt”.</p>';
+        const firstPrompt = appData.prompts.length === 0;
+        promptsContainer.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon"><i class="fas fa-${firstPrompt ? 'wand-magic-sparkles' : 'magnifying-glass'}"></i></div>
+                <h2>${firstPrompt ? 'Create your first prompt' : 'No matching prompts'}</h2>
+                <p>${firstPrompt ? 'Build a private, searchable library of the prompts you use most.' : 'Try another search, category, or library view.'}</p>
+                ${firstPrompt ? '<button class="btn" type="button" data-open-prompt><i class="fas fa-plus"></i> New prompt</button>' : '<button class="btn btn-secondary" type="button" data-action="clear-filters"><i class="fas fa-xmark"></i> Clear filters</button>'}
+            </div>`;
+        renderDetail();
         return;
     }
 
@@ -399,6 +452,15 @@ function renderPrompts() {
         hint.className = 'reorder-hint';
         hint.innerHTML = '<i class="fas fa-circle-info"></i> Clear search and category filters to reorder prompts.';
         promptsContainer.appendChild(hint);
+    }
+
+    if (showPinnedOnly) {
+        sortPrompts(filtered, sort);
+        promptsContainer.appendChild(
+            buildCategorySection(PINNED_SECTION, filtered, false, true, 'pinned-section')
+        );
+        renderDetail();
+        return;
     }
 
     // Virtual pinned section (respects the active search/filter).
@@ -431,6 +493,32 @@ function renderPrompts() {
             buildCategorySection(cat, catPrompts, canReorder, isFiltering, '')
         );
     });
+
+    renderDetail();
+}
+
+function updateWorkspaceNavigation(resultCount, category, searchTerm) {
+    allPromptsCount.textContent = appData.prompts.length;
+    pinnedPromptsCount.textContent = appData.prompts.filter(prompt => prompt.pinned).length;
+    currentResultCount.textContent = resultCount;
+
+    let title = 'All prompts';
+    if (showPinnedOnly) title = 'Pinned';
+    else if (category) title = category;
+    else if (searchTerm) title = 'Search results';
+    currentViewTitle.textContent = title;
+
+    document.querySelectorAll('[data-nav-mode]').forEach(button => {
+        const active = button.dataset.navMode === (showPinnedOnly ? 'pinned' : (!category ? 'all' : ''));
+        button.classList.toggle('active', active);
+    });
+    sidebarCategories.querySelectorAll('[data-category]').forEach(button => {
+        button.classList.toggle('active', !showPinnedOnly && button.dataset.category === category);
+    });
+    document.querySelectorAll('.mobile-tab[data-mobile-action]').forEach(button => {
+        const action = button.dataset.mobileAction;
+        button.classList.toggle('active', (action === 'pinned' && showPinnedOnly) || (action === 'library' && !showPinnedOnly));
+    });
 }
 
 // Builds one collapsible category section. Extracted so the virtual Pinned
@@ -443,10 +531,15 @@ function buildCategorySection(cat, catPrompts, canReorder, isFiltering, extraCla
     const isOpen = isFiltering || !collapsedCategories.has(cat);
     if (isOpen) section.classList.add('expanded');
 
-    const header = document.createElement('div');
+    const contentId = `category-content-${String(cat).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${catPrompts[0]?.id || 'empty'}`;
+    const header = document.createElement('button');
+    header.type = 'button';
     header.className = 'category-header';
+    header.setAttribute('aria-expanded', String(isOpen));
+    header.setAttribute('aria-controls', contentId);
     header.addEventListener('click', () => {
         const nowOpen = section.classList.toggle('expanded');
+        header.setAttribute('aria-expanded', String(nowOpen));
         if (nowOpen) collapsedCategories.delete(cat);
         else collapsedCategories.add(cat);
         saveCollapsedState();
@@ -459,6 +552,7 @@ function buildCategorySection(cat, catPrompts, canReorder, isFiltering, extraCla
 
     const content = document.createElement('div');
     content.className = 'category-content';
+    content.id = contentId;
     const contentInner = document.createElement('div');
     contentInner.className = 'category-content-inner';
 
@@ -489,10 +583,11 @@ function sortPrompts(list, sort) {
 
 function populateCategories() {
     const categories = new Set(appData.prompts.map(p => p.category).filter(c => c));
+    const sortedCategories = [...categories].sort((a, b) => a.localeCompare(b));
 
     // Update datalist (used by the Add/Edit form's category input)
     categoryList.innerHTML = '';
-    categories.forEach(c => {
+    sortedCategories.forEach(c => {
         const option = document.createElement('option');
         option.value = c;
         categoryList.appendChild(option);
@@ -500,24 +595,42 @@ function populateCategories() {
 
     // Update the filter dropdown, preserving the current selection
     const currentFilter = categoryFilter.value;
-    categoryFilter.innerHTML = '<option value="">All Categories</option>';
-    categories.forEach(c => {
+    categoryFilter.innerHTML = '<option value="">All categories</option>';
+    sortedCategories.forEach(c => {
         const option = document.createElement('option');
         option.value = c;
         option.textContent = c;
         categoryFilter.appendChild(option);
     });
     categoryFilter.value = currentFilter;
+
+    sidebarCategories.innerHTML = '';
+    sortedCategories.forEach(category => {
+        const count = appData.prompts.filter(prompt => prompt.category === category).length;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'nav-item';
+        button.dataset.category = category;
+        button.innerHTML = '<span><i class="fas fa-folder"></i><span class="nav-category-name"></span></span><span class="nav-count"></span>';
+        button.querySelector('.nav-category-name').textContent = category;
+        button.querySelector('.nav-count').textContent = count;
+        sidebarCategories.appendChild(button);
+    });
+    updateWorkspaceNavigation(
+        Number(currentResultCount.textContent || appData.prompts.length),
+        categoryFilter.value,
+        searchInput.value.trim().toLowerCase()
+    );
 }
 
 // Whether a body is long enough to warrant a Show more / less control in the
 // current view. Large view always shows the full body, so never needs one.
 function bodyNeedsToggle(text) {
     if (!text) return false;
-    if (currentView === 'large') return false;
     const lineBreaks = (text.match(/\n/g) || []).length;
     if (currentView === 'compact') return text.length > 60 || lineBreaks >= 1;
-    return text.length > 170 || lineBreaks >= 3; // list
+    if (currentView === 'list') return text.length > 170 || lineBreaks >= 3;
+    return text.length > 300 || lineBreaks >= 5;
 }
 
 // Character + rough token count for a prompt body. Tokens are estimated at
@@ -542,9 +655,9 @@ function createItem(p, cat, canReorder, idx, total) {
     item.className = 'prompt-item';
     item.dataset.id = p.id;
     item.dataset.category = cat;
+    if (selectedPromptId === p.id) item.classList.add('is-selected');
 
-    // Large view is always expanded; list/compact remember per-prompt state.
-    const expanded = currentView === 'large' || expandedIds.has(p.id);
+    const expanded = expandedIds.has(p.id);
     if (expanded) item.classList.add('is-expanded');
 
     const tagsHtml = (p.tags && p.tags.length)
@@ -564,22 +677,24 @@ function createItem(p, cat, canReorder, idx, total) {
 
     // Large view gets a prominent Copy button in the footer, so the tools row
     // there is edit/delete only. List/compact keep copy in the tools row.
-    const copyInTools = largeView ? '' : `<button class="tool-btn" data-action="copy" data-id="${p.id}" title="Copy"><i class="fas fa-copy"></i></button>`;
+    const copyInTools = largeView ? '' : `<button class="tool-btn" data-action="copy" data-id="${p.id}" title="Copy" aria-label="Copy ${escapeHtml(p.title)}"><i class="fas fa-copy"></i></button>`;
 
     item.innerHTML = `
         <div class="item-top">
             ${canReorder ? `<button class="drag-handle" aria-label="Drag to reorder" title="Drag to reorder"><i class="fas fa-grip-vertical"></i></button>` : ''}
-            <div class="item-head">
-                <span class="item-title">${escapeHtml(p.title)}</span>
-                ${!largeView && updated ? `<span class="item-meta">${updated}</span>` : ''}
-                ${!largeView ? `<span class="item-meta item-counts">${counts}</span>` : ''}
-            </div>
+            <button class="prompt-open" type="button" data-action="open" data-id="${p.id}" aria-label="Open ${escapeHtml(p.title)}">
+                <span class="item-head">
+                    <span class="item-title">${escapeHtml(p.title)}</span>
+                    ${!largeView && updated ? `<span class="item-meta">${updated}</span>` : ''}
+                    ${!largeView ? `<span class="item-meta item-counts">${counts}</span>` : ''}
+                </span>
+            </button>
             <div class="item-tools">
                 ${reorderBtns}
                 ${pinBtn}
                 ${copyInTools}
-                <button class="tool-btn" data-action="edit" data-id="${p.id}" title="Edit"><i class="fas fa-edit"></i></button>
-                <button class="tool-btn danger" data-action="delete" data-id="${p.id}" title="Delete"><i class="fas fa-trash"></i></button>
+                <button class="tool-btn" data-action="edit" data-id="${p.id}" title="Edit" aria-label="Edit ${escapeHtml(p.title)}"><i class="fas fa-pen"></i></button>
+                <button class="tool-btn danger" data-action="delete" data-id="${p.id}" title="Delete" aria-label="Delete ${escapeHtml(p.title)}"><i class="fas fa-trash"></i></button>
             </div>
         </div>
         ${tagsHtml ? `<div class="item-tags">${tagsHtml}</div>` : ''}
@@ -588,7 +703,7 @@ function createItem(p, cat, canReorder, idx, total) {
             ? '<i class="fas fa-chevron-up"></i> Show less'
             : '<i class="fas fa-chevron-down"></i> Show more'}</button>` : ''}
         ${largeView ? `<div class="item-footer">
-            <button class="copy-btn" data-action="copy" data-id="${p.id}"><i class="fas fa-copy"></i> Copy</button>
+            <button class="copy-btn" data-action="copy" data-id="${p.id}" aria-label="Copy ${escapeHtml(p.title)}"><i class="fas fa-copy"></i> Copy</button>
             <span class="item-meta"><span class="item-counts">${counts}</span>${updated ? ` · Updated ${updated}` : ''}</span>
         </div>` : ''}
     `;
@@ -599,6 +714,66 @@ function createItem(p, cat, canReorder, idx, total) {
     }
     return item;
 }
+
+function renderDetail() {
+    const prompt = appData.prompts.find(item => item.id === selectedPromptId);
+    if (!prompt) {
+        detailEmpty.hidden = false;
+        detailContent.hidden = true;
+        detailContent.innerHTML = '';
+        return;
+    }
+
+    const tags = (prompt.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('');
+    const category = prompt.category || 'Uncategorized';
+    const updated = prompt.updatedAt ? new Date(prompt.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    const created = prompt.createdAt ? new Date(prompt.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    const charCount = prompt.text.length;
+    const tokenCount = Math.max(1, Math.round(charCount / 4));
+    const counts = `${charCount.toLocaleString()} chars · ~${tokenCount.toLocaleString()} tokens`;
+
+    detailEmpty.hidden = true;
+    detailContent.hidden = false;
+    detailContent.innerHTML = `
+        <div class="detail-mobile-header">
+            <button class="detail-back" type="button" data-detail-action="close"><i class="fas fa-chevron-left"></i> Library</button>
+            <button class="icon-btn" type="button" data-detail-action="edit" aria-label="Edit ${escapeHtml(prompt.title)}"><i class="fas fa-pen"></i></button>
+        </div>
+        <div class="detail-kicker">
+            <span class="detail-category">${escapeHtml(category)}</span>
+            <button class="tool-btn pin-btn${prompt.pinned ? ' pinned' : ''}" type="button" data-detail-action="pin" aria-label="${prompt.pinned ? 'Unpin' : 'Pin'} ${escapeHtml(prompt.title)}" aria-pressed="${prompt.pinned ? 'true' : 'false'}"><i class="${prompt.pinned ? 'fas' : 'far'} fa-star"></i></button>
+        </div>
+        <h2 class="detail-title">${escapeHtml(prompt.title)}</h2>
+        ${tags ? `<div class="detail-tags">${tags}</div>` : ''}
+        <div class="detail-meta">
+            <span><i class="far fa-clock"></i> Updated ${escapeHtml(updated)}</span>
+            <span><i class="far fa-calendar"></i> Created ${escapeHtml(created)}</span>
+            <span class="item-counts"><i class="fas fa-text-width"></i> ${escapeHtml(counts)}</span>
+        </div>
+        <p class="detail-prompt-label">Prompt</p>
+        <div class="detail-prompt">${escapeHtml(prompt.text)}</div>
+        ${prompt.notes ? `<div class="detail-notes"><p class="detail-notes-label">Notes</p>${escapeHtml(prompt.notes)}</div>` : ''}
+        <div class="detail-actions">
+            <button class="btn" type="button" data-detail-action="copy"><i class="fas fa-copy"></i> Copy prompt</button>
+            <button class="icon-btn" type="button" data-detail-action="edit" aria-label="Edit prompt"><i class="fas fa-pen"></i></button>
+            <button class="icon-btn danger" type="button" data-detail-action="delete" aria-label="Delete prompt"><i class="fas fa-trash"></i></button>
+        </div>`;
+}
+
+window.openPromptDetail = function(id) {
+    if (!appData.prompts.some(prompt => prompt.id === id)) return;
+    selectedPromptId = id;
+    promptsContainer.querySelectorAll('.prompt-item').forEach(item => {
+        item.classList.toggle('is-selected', Number(item.dataset.id) === id);
+    });
+    renderDetail();
+    detailPanel.classList.add('is-open');
+    detailPanel.scrollTop = 0;
+};
+
+window.closePromptDetail = function() {
+    detailPanel.classList.remove('is-open');
+};
 
 // ---- View switching ----
 window.setView = function(view) {
@@ -612,10 +787,16 @@ window.setView = function(view) {
 };
 
 function updateViewButtons() {
-    document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.view-btn').forEach(btn => {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-pressed', 'false');
+    });
     const map = { large: 'view-large', list: 'view-list', compact: 'view-compact' };
     const activeBtn = document.getElementById(map[currentView]);
-    if (activeBtn) activeBtn.classList.add('active');
+    if (activeBtn) {
+        activeBtn.classList.add('active');
+        activeBtn.setAttribute('aria-pressed', 'true');
+    }
 }
 
 // ---- Expand / collapse (targeted DOM toggle — no re-render) ----
@@ -747,25 +928,64 @@ window.movePrompt = function(id, direction) {
 
 
 // Actions
+function openModal(modal, preferredFocus) {
+    if (!modal) return;
+    lastFocusedElement = document.activeElement;
+    modal.classList.add('active');
+    requestAnimationFrame(() => {
+        const target = preferredFocus || modal.querySelector('input, textarea, button, select');
+        target?.focus();
+    });
+}
+
+function closeModal(modal) {
+    if (!modal) return;
+    modal.classList.remove('active');
+    if (modal === deleteModal) pendingDeleteId = null;
+    if (lastFocusedElement instanceof HTMLElement) lastFocusedElement.focus();
+    lastFocusedElement = null;
+}
+
+function openNewPromptEditor() {
+    promptForm.reset();
+    editorCount.textContent = '0 characters';
+    editState = { isEditing: false, id: null };
+    promptModalTitle.textContent = 'Add new prompt';
+    openModal(promptModal, promptTitle);
+}
+
 window.copyPrompt = function(id) {
     const prompt = appData.prompts.find(p => p.id === id);
     if (prompt) {
         navigator.clipboard.writeText(prompt.text).then(() => {
             showToast("Copied to clipboard!");
-        });
+        }).catch(() => showToast('Unable to copy. Select the prompt text and copy it manually.'));
     }
 }
 
 window.deletePrompt = function(id) {
-    if (confirm("Are you sure you want to delete this prompt?")) {
-        const prompt = appData.prompts.find(p => p.id === id);
-        if (!prompt) return;
-        const deletedAt = Date.now();
-        appData.prompts = appData.prompts.filter(p => p.id !== id);
-        expandedIds.delete(id);
-        saveLocalData([], [{ id, deletedAt, revision: prompt.revision || 0 }]);
-        renderPrompts();
+    const prompt = appData.prompts.find(p => p.id === id);
+    if (!prompt) return;
+    pendingDeleteId = id;
+    deleteModal.querySelector('#delete-title').textContent = `Delete “${prompt.title}”?`;
+    openModal(deleteModal, cancelDeleteBtn);
+}
+
+function performDelete() {
+    const id = pendingDeleteId;
+    const prompt = appData.prompts.find(p => p.id === id);
+    if (!prompt) return closeModal(deleteModal);
+    const deletedAt = Date.now();
+    appData.prompts = appData.prompts.filter(p => p.id !== id);
+    expandedIds.delete(id);
+    if (selectedPromptId === id) {
+        selectedPromptId = null;
+        window.closePromptDetail();
     }
+    closeModal(deleteModal);
+    saveLocalData([], [{ id, deletedAt, revision: prompt.revision || 0 }]);
+    renderPrompts();
+    showToast('Prompt deleted.');
 }
 
 window.editPrompt = function(id) {
@@ -777,10 +997,11 @@ window.editPrompt = function(id) {
     promptTags.value = prompt.tags ? prompt.tags.join(', ') : '';
     promptText.value = prompt.text;
     promptNotes.value = prompt.notes || '';
+    editorCount.textContent = `${prompt.text.length.toLocaleString()} characters`;
 
     editState = { isEditing: true, id: id };
-    promptModalTitle.textContent = "Edit Prompt";
-    promptModal.classList.add('active');
+    promptModalTitle.textContent = "Edit prompt";
+    openModal(promptModal, promptTitle);
 }
 
 // Event Listeners
@@ -791,11 +1012,20 @@ document.querySelectorAll('.view-btn[data-view]').forEach(button => {
 promptsContainer.addEventListener('click', event => {
     const button = event.target.closest('button[data-action]');
     if (!button || !promptsContainer.contains(button)) return;
+    if (button.dataset.action === 'clear-filters') {
+        searchInput.value = '';
+        categoryFilter.value = '';
+        showPinnedOnly = false;
+        clearSearchBtn.style.display = 'none';
+        renderPrompts();
+        return;
+    }
     const id = Number(button.dataset.id);
     if (!Number.isFinite(id)) return;
 
     const actions = {
         move: () => window.movePrompt(id, Number(button.dataset.direction)),
+        open: () => window.openPromptDetail(id),
         pin: () => window.togglePin(id),
         copy: () => window.copyPrompt(id),
         edit: () => window.editPrompt(id),
@@ -803,6 +1033,19 @@ promptsContainer.addEventListener('click', event => {
         expand: () => window.toggleExpand(id)
     };
     actions[button.dataset.action]?.();
+});
+
+detailContent.addEventListener('click', event => {
+    const button = event.target.closest('button[data-detail-action]');
+    if (!button) return;
+    const actions = {
+        close: () => window.closePromptDetail(),
+        copy: () => window.copyPrompt(selectedPromptId),
+        pin: () => window.togglePin(selectedPromptId),
+        edit: () => window.editPrompt(selectedPromptId),
+        delete: () => window.deletePrompt(selectedPromptId)
+    };
+    actions[button.dataset.detailAction]?.();
 });
 
 searchInput.addEventListener('input', () => {
@@ -817,18 +1060,118 @@ clearSearchBtn.addEventListener('click', () => {
     renderPrompts();
 });
 
-categoryFilter.addEventListener('change', renderPrompts);
+categoryFilter.addEventListener('change', () => {
+    showPinnedOnly = false;
+    renderPrompts();
+});
 sortSelect.addEventListener('change', renderPrompts);
 
-addPromptBtn.addEventListener('click', () => {
-    promptForm.reset();
-    editState = { isEditing: false, id: null };
-    promptModalTitle.textContent = "Add New Prompt";
-    promptModal.classList.add('active');
+document.addEventListener('click', event => {
+    const trigger = event.target.closest('[data-open-prompt]');
+    if (trigger) openNewPromptEditor();
 });
 
-closePromptBtn.addEventListener('click', () => {
-    promptModal.classList.remove('active');
+closePromptBtn.addEventListener('click', () => closeModal(promptModal));
+closePromptIcon.addEventListener('click', () => closeModal(promptModal));
+
+function openSidebar() {
+    document.body.classList.add('sidebar-open');
+    mobileMenuBtn.setAttribute('aria-expanded', 'true');
+}
+
+function closeSidebar() {
+    document.body.classList.remove('sidebar-open');
+    mobileMenuBtn.setAttribute('aria-expanded', 'false');
+}
+
+mobileMenuBtn.setAttribute('aria-expanded', 'false');
+mobileMenuBtn.addEventListener('click', openSidebar);
+sidebarCloseBtn.addEventListener('click', closeSidebar);
+sidebarBackdrop.addEventListener('click', closeSidebar);
+
+workspaceSidebar.addEventListener('click', event => {
+    const modeButton = event.target.closest('[data-nav-mode]');
+    const categoryButton = event.target.closest('[data-category]');
+    if (modeButton) {
+        showPinnedOnly = modeButton.dataset.navMode === 'pinned';
+        categoryFilter.value = '';
+        selectedPromptId = null;
+        renderPrompts();
+        closeSidebar();
+    } else if (categoryButton) {
+        showPinnedOnly = false;
+        categoryFilter.value = categoryButton.dataset.category;
+        selectedPromptId = null;
+        renderPrompts();
+        closeSidebar();
+    }
+});
+
+document.querySelector('.mobile-tabbar').addEventListener('click', event => {
+    const button = event.target.closest('[data-mobile-action]');
+    if (!button) return;
+    const action = button.dataset.mobileAction;
+    if (action === 'library' || action === 'pinned') {
+        showPinnedOnly = action === 'pinned';
+        categoryFilter.value = '';
+        selectedPromptId = null;
+        renderPrompts();
+        document.querySelector('.library-panel').scrollTop = 0;
+    } else if (action === 'categories') {
+        openSidebar();
+    } else if (action === 'settings') {
+        accountEmail.textContent = currentUser?.email || 'Unknown account';
+        openModal(settingsModal, closeSettingsBtn);
+    }
+});
+
+sidebarSyncBtn.addEventListener('click', async () => {
+    await syncFromCloud(true);
+});
+
+promptText.addEventListener('input', () => {
+    editorCount.textContent = `${promptText.value.length.toLocaleString()} characters`;
+});
+
+document.querySelectorAll('.modal').forEach(modal => {
+    modal.addEventListener('click', event => {
+        if (event.target === modal) closeModal(modal);
+    });
+});
+
+document.addEventListener('keydown', event => {
+    const activeModal = [...document.querySelectorAll('.modal.active')].pop();
+    if (activeModal) {
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeModal(activeModal);
+            return;
+        }
+        if (event.key === 'Tab') {
+            const focusable = [...activeModal.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+                .filter(element => element.offsetParent !== null);
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        }
+        return;
+    }
+
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+    } else if (event.key === 'Escape') {
+        if (document.body.classList.contains('sidebar-open')) closeSidebar();
+        else window.closePromptDetail();
+    }
 });
 
 promptForm.addEventListener('submit', (e) => {
@@ -868,20 +1211,23 @@ promptForm.addEventListener('submit', (e) => {
         appData.prompts.push(savedPrompt);
     }
 
+    selectedPromptId = savedPrompt.id;
     saveLocalData([savedPrompt]);
     renderPrompts();
-    promptModal.classList.remove('active');
+    closeModal(promptModal);
+    if (window.matchMedia('(max-width: 999px)').matches) window.openPromptDetail(savedPrompt.id);
 });
 
 // Settings & Sync
 settingsBtn.addEventListener('click', () => {
     accountEmail.textContent = currentUser?.email || 'Unknown account';
-    settingsModal.classList.add('active');
+    openModal(settingsModal, closeSettingsBtn);
 });
 
-closeSettingsBtn.addEventListener('click', () => {
-    settingsModal.classList.remove('active');
-});
+closeSettingsBtn.addEventListener('click', () => closeModal(settingsModal));
+closeSettingsIcon.addEventListener('click', () => closeModal(settingsModal));
+cancelDeleteBtn.addEventListener('click', () => closeModal(deleteModal));
+confirmDeleteBtn.addEventListener('click', performDelete);
 
 signOutBtn.addEventListener('click', async () => {
     signOutBtn.disabled = true;
@@ -891,7 +1237,7 @@ signOutBtn.addEventListener('click', async () => {
         showToast(error.message);
         return;
     }
-    settingsModal.classList.remove('active');
+    closeModal(settingsModal);
     endUserSession();
 });
 
@@ -939,6 +1285,7 @@ function startUserSession(user) {
     currentUser = user;
     cloudRevision = 0;
     accountEmail.textContent = user.email || user.id;
+    sidebarAccountEmail.textContent = user.email || 'Cloud workspace';
     document.body.classList.add('is-authenticated');
     authScreen.hidden = true;
     appContainer.hidden = false;
@@ -975,11 +1322,15 @@ function endUserSession() {
     sessionStartPromise = null;
     cloudRevision = 0;
     pendingMutations = new Map();
+    selectedPromptId = null;
+    showPinnedOnly = false;
     clearTimeout(syncTimeout);
     appData = normalizeData(null);
     localStorage.removeItem('promptManagerData');
     if (previousUserId) void clearLocalUserData(previousUserId);
     document.body.classList.remove('is-authenticated');
+    document.body.classList.remove('sidebar-open');
+    detailPanel.classList.remove('is-open');
     appContainer.hidden = true;
     authScreen.hidden = false;
     loginEmail.focus();
@@ -1020,6 +1371,11 @@ function setCloudState(state, message) {
     };
     syncBtn.innerHTML = icons[state] || '<i class="fas fa-cloud"></i>';
     cloudStatus.textContent = message;
+    saveState.dataset.state = state;
+    sidebarSyncBtn.dataset.state = state;
+    saveStateLabel.textContent = state === 'synced' ? 'Saved' : message;
+    sidebarSyncLabel.textContent = state === 'synced' ? 'All changes saved' : message;
+    syncBtn.setAttribute('aria-label', state === 'syncing' ? 'Syncing prompts' : state === 'error' ? 'Sync failed. Retry' : 'Sync prompts');
     if (state === 'synced') {
         setTimeout(() => { syncBtn.innerHTML = '<i class="fas fa-cloud"></i>'; }, 1500);
     }

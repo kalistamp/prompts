@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="description" content="Organize and securely sync reusable AI prompts.">
+    <meta name="theme-color" content="#f5f7fb">
     <meta name="referrer" content="no-referrer">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
@@ -12,125 +13,258 @@
 </head>
 <body>
     <section id="auth-screen" class="auth-screen">
-        <div class="auth-card">
-            <i class="fas fa-wand-magic-sparkles auth-icon"></i>
-            <h1>Prompt Studio</h1>
-            <p>Sign in to securely sync your prompts.</p>
-            <form id="login-form">
-                <div class="form-control">
-                    <label for="login-email">Email</label>
-                    <input type="email" id="login-email" autocomplete="email" required>
+        <div class="auth-layout">
+            <div class="auth-intro" aria-hidden="true">
+                <div class="brand-mark brand-mark-large"><i class="fas fa-wand-magic-sparkles"></i></div>
+                <p class="eyebrow">Your private prompt library</p>
+                <h1>Every great prompt,<br>ready when you are.</h1>
+                <p class="auth-lead">Organize, find, and securely sync the prompts you use every day.</p>
+                <div class="auth-benefits">
+                    <span><i class="fas fa-bolt"></i> Find anything fast</span>
+                    <span><i class="fas fa-layer-group"></i> Organize your way</span>
+                    <span><i class="fas fa-cloud-arrow-up"></i> Sync across devices</span>
                 </div>
-                <div class="form-control">
-                    <label for="login-password">Password</label>
-                    <input type="password" id="login-password" autocomplete="current-password" required>
+            </div>
+
+            <div class="auth-card">
+                <div class="auth-mobile-brand">
+                    <div class="brand-mark"><i class="fas fa-wand-magic-sparkles"></i></div>
+                    <span>Prompt Studio</span>
                 </div>
-                <button class="btn auth-submit" type="submit"><i class="fas fa-right-to-bracket"></i> Sign in</button>
-                <p id="login-error" class="form-error" role="alert" aria-live="polite"></p>
-            </form>
+                <p class="eyebrow">Welcome back</p>
+                <h2>Sign in to your workspace</h2>
+                <p class="auth-card-copy">Your prompts stay private and sync securely to your account.</p>
+                <form id="login-form">
+                    <div class="form-control">
+                        <label for="login-email">Email</label>
+                        <input type="email" id="login-email" autocomplete="email" inputmode="email" required placeholder="you@example.com">
+                    </div>
+                    <div class="form-control">
+                        <label for="login-password">Password</label>
+                        <input type="password" id="login-password" autocomplete="current-password" required placeholder="Enter your password">
+                    </div>
+                    <button class="btn auth-submit" type="submit"><span>Sign in</span><i class="fas fa-arrow-right"></i></button>
+                    <p id="login-error" class="form-error" role="alert" aria-live="polite"></p>
+                </form>
+                <p class="auth-footnote"><i class="fas fa-lock"></i> Encrypted connection · Private workspace</p>
+            </div>
         </div>
     </section>
 
-    <!-- Settings Modal -->
-    <div id="settings-modal" class="modal">
-        <div class="modal-content">
-            <h2><i class="fas fa-cloud"></i> Cloud Sync</h2>
-            <p class="modal-desc">Your prompts are stored in the <strong>prompts</strong> schema and protected by your Supabase account.</p>
-            <div class="account-row">
-                <span>Signed in as</span>
-                <strong id="account-email"></strong>
+    <div id="settings-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="modal-content settings-dialog">
+            <div class="sheet-handle" aria-hidden="true"></div>
+            <div class="modal-heading">
+                <div>
+                    <p class="eyebrow">Account</p>
+                    <h2 id="settings-title">Cloud sync</h2>
+                </div>
+                <button class="icon-btn modal-close-icon" id="close-settings-icon" type="button" aria-label="Close settings"><i class="fas fa-xmark"></i></button>
             </div>
-            <div class="account-row">
-                <span>Status</span>
-                <strong id="cloud-status">Checking…</strong>
+            <p class="modal-desc">Your prompts are stored in the <strong>prompts</strong> schema and protected by your Supabase account.</p>
+            <div class="settings-list">
+                <div class="account-row">
+                    <span><i class="fas fa-user"></i> Signed in as</span>
+                    <strong id="account-email"></strong>
+                </div>
+                <div class="account-row">
+                    <span><i class="fas fa-cloud"></i> Sync status</span>
+                    <strong id="cloud-status">Checking…</strong>
+                </div>
             </div>
             <div class="modal-actions">
-                <button class="btn btn-secondary" id="sign-out-btn"><i class="fas fa-right-from-bracket"></i> Sign out</button>
-                <button class="btn" id="close-settings-btn">Done</button>
+                <button class="btn btn-secondary" id="sign-out-btn" type="button"><i class="fas fa-right-from-bracket"></i> Sign out</button>
+                <button class="btn" id="close-settings-btn" type="button">Done</button>
             </div>
         </div>
     </div>
 
-    <!-- Prompt Modal -->
-    <div id="prompt-modal" class="modal">
-        <div class="modal-content modal-large">
-            <h2 id="prompt-modal-title">Add New Prompt</h2>
-            <form id="prompt-form">
-                <div class="form-control">
-                    <label>Title *</label>
-                    <input type="text" id="prompt-title" required placeholder="e.g. Code Reviewer">
+    <div id="delete-modal" class="modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description">
+        <div class="modal-content delete-dialog">
+            <div class="sheet-handle" aria-hidden="true"></div>
+            <div class="delete-icon" aria-hidden="true"><i class="fas fa-trash"></i></div>
+            <h2 id="delete-title">Delete this prompt?</h2>
+            <p class="modal-desc" id="delete-description">This removes the prompt from your library and synced devices. This action cannot be undone.</p>
+            <div class="modal-actions delete-actions">
+                <button class="btn btn-secondary" id="cancel-delete-btn" type="button">Cancel</button>
+                <button class="btn btn-danger" id="confirm-delete-btn" type="button"><i class="fas fa-trash"></i> Delete prompt</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="prompt-modal" class="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title">
+        <div class="modal-content prompt-sheet">
+            <div class="sheet-handle" aria-hidden="true"></div>
+            <div class="modal-heading prompt-sheet-heading">
+                <div>
+                    <p class="eyebrow">Prompt editor</p>
+                    <h2 id="prompt-modal-title">Add new prompt</h2>
                 </div>
-                <div class="form-row">
-                    <div class="form-control flex-grow">
-                        <label>Category</label>
-                        <input type="text" id="prompt-category" placeholder="e.g. Coding" list="category-list">
-                        <datalist id="category-list"></datalist>
+                <button class="icon-btn modal-close-icon" id="close-prompt-icon" type="button" aria-label="Close prompt editor"><i class="fas fa-xmark"></i></button>
+            </div>
+            <form id="prompt-form" class="prompt-form">
+                <div class="prompt-form-scroll">
+                    <div class="form-control">
+                        <label for="prompt-title">Title <span aria-hidden="true">*</span></label>
+                        <input type="text" id="prompt-title" required placeholder="e.g. Code Reviewer">
                     </div>
-                    <div class="form-control flex-grow">
-                        <label>Tags (comma separated)</label>
-                        <input type="text" id="prompt-tags" placeholder="e.g. react, debug">
+                    <div class="form-row">
+                        <div class="form-control flex-grow">
+                            <label for="prompt-category">Category</label>
+                            <input type="text" id="prompt-category" placeholder="e.g. Coding" list="category-list">
+                            <datalist id="category-list"></datalist>
+                        </div>
+                        <div class="form-control flex-grow">
+                            <label for="prompt-tags">Tags</label>
+                            <input type="text" id="prompt-tags" placeholder="react, debug, review">
+                        </div>
+                    </div>
+                    <div class="form-control prompt-text-control">
+                        <div class="field-label-row">
+                            <label for="prompt-text">Prompt text <span aria-hidden="true">*</span></label>
+                            <span id="editor-count" class="field-counter">0 characters</span>
+                        </div>
+                        <textarea id="prompt-text" required rows="12" placeholder="You are an expert..."></textarea>
+                    </div>
+                    <div class="form-control">
+                        <label for="prompt-notes">Notes <span class="optional-label">Optional</span></label>
+                        <textarea id="prompt-notes" rows="3" placeholder="Usage notes, model preferences, or reminders..."></textarea>
                     </div>
                 </div>
-                <div class="form-control">
-                    <label>Prompt Text *</label>
-                    <textarea id="prompt-text" required rows="6" placeholder="You are an expert..."></textarea>
-                </div>
-                <div class="form-control">
-                    <label>Notes (Optional)</label>
-                    <textarea id="prompt-notes" rows="2" placeholder="Any usage notes..."></textarea>
-                </div>
-                <div class="modal-actions">
-                    <button type="submit" class="btn" id="save-prompt-btn">Save Prompt</button>
+                <div class="modal-actions prompt-sheet-actions">
                     <button type="button" class="btn btn-secondary" id="close-prompt-btn">Cancel</button>
+                    <button type="submit" class="btn" id="save-prompt-btn"><i class="fas fa-check"></i> Save prompt</button>
                 </div>
             </form>
         </div>
     </div>
 
     <div class="app-container" id="app-container" hidden>
-        <header>
-            <div class="header-left">
-                <h1>Prompt Studio</h1>
-            </div>
-            <div class="header-right">
-                <button class="icon-btn" id="theme-toggle" title="Toggle Dark Mode"><i class="fas fa-moon"></i></button>
-                <button class="icon-btn" id="sync-btn" title="Cloud Sync"><i class="fas fa-cloud"></i></button>
-                <button class="icon-btn" id="settings-btn" title="Settings"><i class="fas fa-cog"></i></button>
-            </div>
-        </header>
-
-        <main>
-            <div class="toolbar">
-                <div class="search-bar">
-                    <input type="text" id="search-input" placeholder="Search prompts, tags...">
-                    <button class="clear-search-btn" id="clear-search-btn" title="Clear search"><i class="fas fa-times"></i></button>
-                </div>
-                <div class="filters">
-                    <select id="category-filter">
-                        <option value="">All Categories</option>
-                    </select>
-                    <select id="sort-select">
-                        <option value="date-desc">Newest First</option>
-                        <option value="date-asc">Oldest First</option>
-                        <option value="name-asc">Name (A-Z)</option>
-                        <option value="name-desc">Name (Z-A)</option>
-                        <option value="custom">Custom Order</option>
-                    </select>
-                    <div class="view-switcher" role="group" aria-label="View mode">
-                        <button class="view-btn" id="view-large" data-view="large" title="Large Icons — full prompt" aria-label="Large Icons view"><i class="fas fa-table-cells-large"></i></button>
-                        <button class="view-btn" id="view-list" data-view="list" title="List — preview" aria-label="List view"><i class="fas fa-list"></i></button>
-                        <button class="view-btn" id="view-compact" data-view="compact" title="Compact — dense" aria-label="Compact view"><i class="fas fa-bars"></i></button>
+        <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+        <div class="app-shell">
+            <aside class="workspace-sidebar" id="workspace-sidebar" aria-label="Prompt library navigation">
+                <div class="sidebar-header">
+                    <div class="sidebar-brand">
+                        <div class="brand-mark"><i class="fas fa-wand-magic-sparkles"></i></div>
+                        <div>
+                            <strong>Prompt Studio</strong>
+                            <span>Private workspace</span>
+                        </div>
                     </div>
-                    <button class="btn" id="add-prompt-btn"><i class="fas fa-plus"></i> New Prompt</button>
+                    <button class="icon-btn sidebar-close" id="sidebar-close-btn" type="button" aria-label="Close navigation"><i class="fas fa-xmark"></i></button>
                 </div>
-            </div>
 
-            <div id="prompts-container">
-                <!-- Category sections injected here -->
-            </div>
-        </main>
+                <button class="btn sidebar-new-btn" type="button" data-open-prompt><i class="fas fa-plus"></i> New prompt</button>
+
+                <nav class="sidebar-nav" aria-label="Library views">
+                    <p class="sidebar-label">Library</p>
+                    <button class="nav-item active" type="button" data-nav-mode="all">
+                        <span><i class="fas fa-layer-group"></i> All prompts</span>
+                        <span class="nav-count" id="all-prompts-count">0</span>
+                    </button>
+                    <button class="nav-item" type="button" data-nav-mode="pinned">
+                        <span><i class="fas fa-star"></i> Pinned</span>
+                        <span class="nav-count" id="pinned-prompts-count">0</span>
+                    </button>
+                    <div class="sidebar-section-heading">
+                        <p class="sidebar-label">Categories</p>
+                    </div>
+                    <div id="sidebar-categories" class="sidebar-categories"></div>
+                </nav>
+
+                <div class="sidebar-footer">
+                    <button class="sync-summary" id="sidebar-sync-btn" type="button">
+                        <span class="status-dot" id="sidebar-status-dot"></span>
+                        <span class="sync-summary-copy"><strong id="sidebar-sync-label">Checking…</strong><small id="sidebar-account-email">Cloud workspace</small></span>
+                        <i class="fas fa-rotate"></i>
+                    </button>
+                </div>
+            </aside>
+
+            <section class="workspace-shell">
+                <header class="workspace-header">
+                    <div class="header-context">
+                        <button class="icon-btn mobile-menu-btn" id="mobile-menu-btn" type="button" aria-label="Open categories"><i class="fas fa-bars"></i></button>
+                        <div class="context-title">
+                            <p class="eyebrow">Prompt library</p>
+                            <div class="context-title-row">
+                                <h1 id="current-view-title">All prompts</h1>
+                                <span class="result-count" id="current-result-count">0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="search-bar">
+                        <i class="fas fa-magnifying-glass search-icon" aria-hidden="true"></i>
+                        <label class="sr-only" for="search-input">Search prompts</label>
+                        <input type="search" id="search-input" placeholder="Search prompts and tags" autocomplete="off">
+                        <span class="search-shortcut" aria-hidden="true">⌘K</span>
+                        <button class="clear-search-btn" id="clear-search-btn" type="button" aria-label="Clear search"><i class="fas fa-times"></i></button>
+                    </div>
+
+                    <div class="header-actions">
+                        <div class="save-state" id="save-state" aria-live="polite">
+                            <span class="status-dot"></span>
+                            <span id="save-state-label">Synced</span>
+                        </div>
+                        <button class="icon-btn" id="theme-toggle" type="button" aria-label="Toggle dark mode"><i class="fas fa-moon"></i></button>
+                        <button class="icon-btn" id="sync-btn" type="button" aria-label="Sync prompts"><i class="fas fa-cloud"></i></button>
+                        <button class="icon-btn" id="settings-btn" type="button" aria-label="Open settings"><i class="fas fa-gear"></i></button>
+                    </div>
+                </header>
+
+                <div class="workspace-toolbar">
+                    <div class="mobile-filter-wrap">
+                        <label class="sr-only" for="category-filter">Filter by category</label>
+                        <select id="category-filter">
+                            <option value="">All categories</option>
+                        </select>
+                    </div>
+                    <div class="toolbar-spacer"></div>
+                    <label class="sr-only" for="sort-select">Sort prompts</label>
+                    <select id="sort-select" class="sort-select">
+                        <option value="date-desc">Newest first</option>
+                        <option value="date-asc">Oldest first</option>
+                        <option value="name-asc">Name A–Z</option>
+                        <option value="name-desc">Name Z–A</option>
+                        <option value="custom">Custom order</option>
+                    </select>
+                    <div class="view-switcher" role="group" aria-label="Prompt view">
+                        <button class="view-btn" id="view-large" data-view="large" type="button" aria-label="Card view" title="Card view"><i class="fas fa-table-cells-large"></i></button>
+                        <button class="view-btn" id="view-list" data-view="list" type="button" aria-label="List view" title="List view"><i class="fas fa-list"></i></button>
+                        <button class="view-btn" id="view-compact" data-view="compact" type="button" aria-label="Compact view" title="Compact view"><i class="fas fa-bars"></i></button>
+                    </div>
+                    <button class="btn toolbar-new-btn" id="add-prompt-btn" type="button"><i class="fas fa-plus"></i> New prompt</button>
+                </div>
+
+                <main class="workspace-content">
+                    <section class="library-panel" aria-label="Prompts">
+                        <div id="prompts-container"></div>
+                    </section>
+
+                    <aside class="detail-panel" id="detail-panel" aria-label="Prompt details">
+                        <div class="detail-empty" id="detail-empty">
+                            <div class="detail-empty-icon"><i class="fas fa-align-left"></i></div>
+                            <h2>Select a prompt</h2>
+                            <p>Choose a prompt to read, copy, or edit it without losing your place.</p>
+                            <button class="btn btn-secondary" type="button" data-open-prompt><i class="fas fa-plus"></i> Create a prompt</button>
+                        </div>
+                        <div id="detail-content" class="detail-content" hidden></div>
+                    </aside>
+                </main>
+            </section>
+        </div>
+
+        <nav class="mobile-tabbar" aria-label="Primary navigation">
+            <button class="mobile-tab active" type="button" data-mobile-action="library"><i class="fas fa-layer-group"></i><span>Library</span></button>
+            <button class="mobile-tab" type="button" data-mobile-action="pinned"><i class="fas fa-star"></i><span>Pinned</span></button>
+            <button class="mobile-tab mobile-tab-create" type="button" data-open-prompt aria-label="Create prompt"><span><i class="fas fa-plus"></i></span><small>New</small></button>
+            <button class="mobile-tab" type="button" data-mobile-action="categories"><i class="fas fa-folder"></i><span>Categories</span></button>
+            <button class="mobile-tab" type="button" data-mobile-action="settings"><i class="fas fa-gear"></i><span>Settings</span></button>
+        </nav>
     </div>
+
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4" integrity="sha384-yiVMs0R/Jyz7OhoXa/DsEMUSBLjEhr/QJta2ONO+zB6I8/GmNg/7AUFrZmAJV7KV" crossorigin="anonymous"></script>
-    <script src="script.js?v=6"></script>
+    <script src="script.js?v=7"></script>
 </body>
 </html>
