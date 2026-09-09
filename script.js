@@ -209,10 +209,12 @@
     importPasteWrap: $('import-paste-wrap'),
     importText: $('import-text'),
     importTextBtn: $('import-text-btn'),
-    importNote: $('import-note'),
+    importNote: $('import-note')
 
-    fab: $('fab'),
-    tabbar: document.querySelector('.mobile-tabbar')
+    // The FAB and the mobile tab bar are deliberately absent. Both are
+    // driven by delegated listeners keyed on data-open-prompt and
+    // data-section, so holding a reference to either would be a lookup
+    // nothing reads — the exact shape of the dead v1 toolbar button.
   };
 
   // Editor state, separate from view state because it only exists

@@ -505,3 +505,55 @@ test('a file that is not prompts is refused with a readable message', () => {
   assert.throws(() => Cloud.parseImport('{ not json'), /not valid JSON/);
   assert.throws(() => Cloud.parseImport({ something: 'else' }), /No prompts found/);
 });
+
+// ─────────────────────────────────────────────
+// MARKUP — every opener is actually wired
+// ─────────────────────────────────────────────
+
+const indexHtml = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+
+test('every "new prompt" control carries data-open-prompt', () => {
+  /* The v1 toolbar button had id="add-prompt-btn", the id was read
+     into a variable, and no listener was ever attached to it — so it
+     rendered, looked identical to the working buttons beside it, and
+     did nothing. Nothing in the DOM or the CSS showed the fault.
+
+     Every opener now goes through one delegated listener keyed on
+     data-open-prompt, and this asserts none of them can drift back
+     out of it. */
+  const buttons = indexHtml.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) || [];
+  const opener = /new prompt|new meta-prompt|create a prompt/i;
+
+  const dead = buttons
+    .filter(html => opener.test(html))
+    .filter(html => !/\bdata-open-prompt\b/.test(html));
+
+  assert.deepEqual(dead, [], 'these look like openers but are not wired to one');
+  assert.ok(
+    buttons.filter(html => /\bdata-open-prompt\b/.test(html)).length >= 4,
+    'the opener controls are still present'
+  );
+});
+
+test('no element is looked up and then never used', async () => {
+  /* The same failure in its general form, and the one that actually
+     bit v1: an element is read out of the DOM into a variable and the
+     variable goes nowhere, so the control renders and does nothing.
+
+     Every lookup here goes through the `el` map, so a dead one is an
+     `el.name` that is assigned and never read. */
+  const scriptSource = await readFile(new URL('../script.js', import.meta.url), 'utf8');
+
+  // Both lookup styles, so a querySelector entry cannot slip past.
+  const assigned = [
+    ...scriptSource.matchAll(/^\s{4}([A-Za-z0-9_]+):\s*(?:\$\(|document\.querySelector\()/gm)
+  ].map(m => m[1]);
+  assert.ok(assigned.length > 30, `expected the el map, found ${assigned.length} entries`);
+
+  const unused = assigned.filter(name => {
+    const uses = scriptSource.match(new RegExp(`\\bel\\.${name}\\b`, 'g')) || [];
+    return uses.length === 0;
+  });
+
+  assert.deepEqual(unused, [], 'these elements are looked up but never used');
+});
