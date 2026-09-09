@@ -1,1654 +1,2179 @@
-// These are public browser credentials. The service-role key must never be
-// placed in this repository or sent to the browser.
-const SUPABASE_CONFIG = {
-    url: "https://baiojghilzxhkebfblzv.supabase.co",
-    publishableKey: "sb_publishable_nfLVr5Krdld9pxxr4f2CYQ_bsn0TNxx",
-    schema: "prompts"
-};
+/* ============================================================
+   PROMPT STUDIO — UI
 
-const LOCAL_DB_NAME = 'prompt-studio';
-const LOCAL_DB_VERSION = 1;
-const DELTA_PAGE_SIZE = 500;
-const PROMPT_COLUMNS = [
-    'id', 'title', 'prompt_text', 'category', 'tags', 'notes', 'pinned',
-    'created_at', 'updated_at', 'sort_order', 'deleted_at', 'revision'
-].join(',');
+   Owns the view state and the DOM. All persistence goes through
+   PromptCloud; all model calls go through PromptRunner; all
+   per-device settings through PromptSettings.
 
-// Label for the virtual "Pinned" section rendered above the real categories.
-// It is a display shortcut only — pinned prompts still live in (and also
-// render inside) their own category.
-const PINNED_SECTION = "📌 Pinned";
+   FOUR SECTIONS, ONE MARKUP TREE
+     Library and Scratch are the same list+detail component with
+     different retention chrome, so switching between them swaps the
+     data and not the DOM. Workshop and History are their own views.
+     Layout is switched by CSS at 700 and 1024 only — there is no
+     user-agent sniffing and no second set of mobile markup.
 
-// State
-let appData = {
-    lastModified: 0,
-    prompts: [],
-    deleted: []
-};
-let editState = { isEditing: false, id: null };
-let supabaseClient = null;
-let currentUser = null;
-let syncTimeout = null;
-let cloudRevision = 0;
-let pullPromise = null;
-let flushPromise = null;
-let sessionStartPromise = null;
-let localDbPromise = null;
-let localWriteQueue = Promise.resolve();
-let pendingMutations = new Map();
-let mutationSequence = 0;
-let selectedPromptId = null;
-let showPinnedOnly = false;
-let lastFocusedElement = null;
-let pendingDeleteId = null;
+   No inline event handlers anywhere; every listener is attached here.
+   ============================================================ */
 
-// View state: 'large' (Large Icons), 'list' (List), 'compact' (Compact)
-let currentView = localStorage.getItem('promptManagerView') || 'large';
-if (!['large', 'list', 'compact'].includes(currentView)) currentView = 'large';
-// IDs of prompts whose body is currently expanded (list/compact views only).
-let expandedIds = new Set();
-// Categories the user has explicitly collapsed. Persisted so open/closed state
-// survives re-renders (reorder/edit/toggle) AND page reloads. Absence = open.
-let collapsedCategories = new Set(loadCollapsedState());
+(function () {
+  'use strict';
 
-function loadCollapsedState() {
+  const Cloud = window.PromptCloud;
+  const Runner = window.PromptRunner;
+  const Settings = window.PromptSettings;
+
+  // ─────────────────────────────────────────────
+  // VIEW STATE
+  // ─────────────────────────────────────────────
+
+  const prefs = Settings.readPrefs();
+
+  const state = {
+    section: 'library',
+    search: '',
+    category: '',
+    sort: prefs.sort,
+    view: prefs.view,
+    pinnedOnly: false,
+    selectedPromptId: null,
+    expandedIds: new Set(),
+    collapsedCategories: new Set(loadCollapsed()),
+
+    // Workshop
+    metaPromptId: null,
+    running: false,
+    abortController: null,
+    lastRun: null,
+
+    // History
+    selectMode: false,
+    selectedRunIds: new Set(),
+    historyRange: 'all',
+    historyProvider: '',
+    historyStatus: '',
+    historyUnsavedOnly: false,
+
+    pendingConfirm: null,
+    pendingRunDelete: null,
+    paletteIndex: 0,
+    paletteItems: []
+  };
+
+  function loadCollapsed() {
     try {
-        const raw = localStorage.getItem('promptManagerCollapsed');
-        const parsed = raw ? JSON.parse(raw) : [];
-        return Array.isArray(parsed) ? parsed : [];
-    } catch (e) {
-        return [];
-    }
-}
+      const raw = JSON.parse(localStorage.getItem('ps.collapsed.v1') || '[]');
+      return Array.isArray(raw) ? raw : [];
+    } catch (e) { return []; }
+  }
 
-function saveCollapsedState() {
-    localStorage.setItem('promptManagerCollapsed', JSON.stringify([...collapsedCategories]));
-}
-
-// DOM Elements
-const themeToggle = document.getElementById('theme-toggle');
-const syncBtn = document.getElementById('sync-btn');
-const settingsBtn = document.getElementById('settings-btn');
-const addPromptBtn = document.getElementById('add-prompt-btn');
-
-const settingsModal = document.getElementById('settings-modal');
-const closeSettingsBtn = document.getElementById('close-settings-btn');
-const signOutBtn = document.getElementById('sign-out-btn');
-const accountEmail = document.getElementById('account-email');
-const cloudStatus = document.getElementById('cloud-status');
-const authScreen = document.getElementById('auth-screen');
-const appContainer = document.getElementById('app-container');
-const loginForm = document.getElementById('login-form');
-const loginEmail = document.getElementById('login-email');
-const loginPassword = document.getElementById('login-password');
-const loginError = document.getElementById('login-error');
-
-const promptModal = document.getElementById('prompt-modal');
-const promptForm = document.getElementById('prompt-form');
-const promptModalTitle = document.getElementById('prompt-modal-title');
-const promptTitle = document.getElementById('prompt-title');
-const promptCategory = document.getElementById('prompt-category');
-const promptTags = document.getElementById('prompt-tags');
-const promptText = document.getElementById('prompt-text');
-const promptNotes = document.getElementById('prompt-notes');
-const closePromptBtn = document.getElementById('close-prompt-btn');
-const closePromptIcon = document.getElementById('close-prompt-icon');
-const closeSettingsIcon = document.getElementById('close-settings-icon');
-const deleteModal = document.getElementById('delete-modal');
-const cancelDeleteBtn = document.getElementById('cancel-delete-btn');
-const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
-
-const promptsContainer = document.getElementById('prompts-container');
-const searchInput = document.getElementById('search-input');
-const clearSearchBtn = document.getElementById('clear-search-btn');
-const categoryFilter = document.getElementById('category-filter');
-const sortSelect = document.getElementById('sort-select');
-const categoryList = document.getElementById('category-list');
-const editorCount = document.getElementById('editor-count');
-const workspaceSidebar = document.getElementById('workspace-sidebar');
-const sidebarBackdrop = document.getElementById('sidebar-backdrop');
-const sidebarCloseBtn = document.getElementById('sidebar-close-btn');
-const mobileMenuBtn = document.getElementById('mobile-menu-btn');
-const sidebarCategories = document.getElementById('sidebar-categories');
-const allPromptsCount = document.getElementById('all-prompts-count');
-const pinnedPromptsCount = document.getElementById('pinned-prompts-count');
-const sidebarSyncBtn = document.getElementById('sidebar-sync-btn');
-const sidebarSyncLabel = document.getElementById('sidebar-sync-label');
-const sidebarStatusDot = document.getElementById('sidebar-status-dot');
-const sidebarAccountEmail = document.getElementById('sidebar-account-email');
-const currentViewTitle = document.getElementById('current-view-title');
-const currentResultCount = document.getElementById('current-result-count');
-const saveState = document.getElementById('save-state');
-const saveStateLabel = document.getElementById('save-state-label');
-const detailPanel = document.getElementById('detail-panel');
-const detailEmpty = document.getElementById('detail-empty');
-const detailContent = document.getElementById('detail-content');
-
-// Initialize
-async function init() {
-    initTheme();
-
-    // Remove obsolete Gist credentials left by an older deployment.
-    localStorage.removeItem('promptGithubToken');
-    localStorage.removeItem('promptGistId');
-
-    if (!window.supabase) {
-        loginError.textContent = "Cloud library failed to load. Check your connection and refresh.";
-        return;
-    }
-
-    supabaseClient = window.supabase.createClient(
-        SUPABASE_CONFIG.url,
-        SUPABASE_CONFIG.publishableKey
-    );
-    supabaseClient.auth.onAuthStateChange((event, session) => {
-        if (event === 'SIGNED_OUT' && currentUser) endUserSession();
-        if (event === 'SIGNED_IN' && session?.user) {
-            setTimeout(() => startUserSession(session.user), 0);
-        }
-    });
-
-    const { data, error } = await supabaseClient.auth.getSession();
-    if (error) {
-        loginError.textContent = error.message;
-        return;
-    }
-
-    if (data.session?.user) await startUserSession(data.session.user);
-}
-
-// Theme Logic
-function initTheme() {
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'dark') {
-        document.body.setAttribute('data-theme', 'dark');
-    } else {
-        document.body.removeAttribute('data-theme');
-    }
-    updateThemeUI();
-}
-
-function updateThemeUI() {
-    const isDark = document.body.getAttribute('data-theme') === 'dark';
-    themeToggle.innerHTML = `<i class="fas fa-${isDark ? 'sun' : 'moon'}"></i>`;
-    themeToggle.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
-    const themeMeta = document.querySelector('meta[name="theme-color"]');
-    if (themeMeta) themeMeta.content = isDark ? '#0b1120' : '#f5f7fb';
-}
-
-themeToggle.addEventListener('click', () => {
-    if (document.body.getAttribute('data-theme') === 'dark') {
-        document.body.removeAttribute('data-theme');
-        localStorage.setItem('theme', 'light');
-    } else {
-        document.body.setAttribute('data-theme', 'dark');
-        localStorage.setItem('theme', 'dark');
-    }
-    updateThemeUI();
-});
-
-// Data Management
-function openLocalDb() {
-    if (localDbPromise) return localDbPromise;
-    localDbPromise = new Promise((resolve, reject) => {
-        const request = indexedDB.open(LOCAL_DB_NAME, LOCAL_DB_VERSION);
-        request.onerror = () => reject(request.error);
-        request.onupgradeneeded = () => {
-            const db = request.result;
-            if (!db.objectStoreNames.contains('prompts')) {
-                const store = db.createObjectStore('prompts', { keyPath: ['userId', 'id'] });
-                store.createIndex('by_user', 'userId', { unique: false });
-            }
-            if (!db.objectStoreNames.contains('outbox')) {
-                const store = db.createObjectStore('outbox', { keyPath: ['userId', 'id'] });
-                store.createIndex('by_user', 'userId', { unique: false });
-            }
-            if (!db.objectStoreNames.contains('meta')) {
-                db.createObjectStore('meta', { keyPath: 'userId' });
-            }
-        };
-        request.onsuccess = () => resolve(request.result);
-    });
-    return localDbPromise;
-}
-
-function idbRequest(request) {
-    return new Promise((resolve, reject) => {
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-    });
-}
-
-function idbTransactionDone(transaction) {
-    return new Promise((resolve, reject) => {
-        transaction.oncomplete = () => resolve();
-        transaction.onerror = () => reject(transaction.error);
-        transaction.onabort = () => reject(transaction.error || new Error('Local database transaction aborted.'));
-    });
-}
-
-async function readUserStore(storeName, userId) {
-    const db = await openLocalDb();
-    const transaction = db.transaction(storeName, 'readonly');
-    const request = transaction.objectStore(storeName).index('by_user').getAll(IDBKeyRange.only(userId));
-    const rows = await idbRequest(request);
-    await idbTransactionDone(transaction);
-    return rows;
-}
-
-function persistLocalBatch({ upserts = [], deletes = [], outboxPuts = [], outboxDeletes = [], revision = cloudRevision } = {}) {
-    const userId = currentUser?.id;
-    if (!userId) return Promise.resolve();
-
-    localWriteQueue = localWriteQueue
-        .catch(error => console.error('Previous local database write failed:', error))
-        .then(async () => {
-            const db = await openLocalDb();
-            const transaction = db.transaction(['prompts', 'outbox', 'meta'], 'readwrite');
-            const promptStore = transaction.objectStore('prompts');
-            const outboxStore = transaction.objectStore('outbox');
-
-            upserts.forEach(prompt => promptStore.put({ ...prompt, userId }));
-            deletes.forEach(id => promptStore.delete([userId, Number(id)]));
-            outboxPuts.forEach(mutation => outboxStore.put({ ...mutation, userId }));
-            outboxDeletes.forEach(id => outboxStore.delete([userId, Number(id)]));
-            transaction.objectStore('meta').put({ userId, cloudRevision: Number(revision || 0) });
-            await idbTransactionDone(transaction);
-        });
-    return localWriteQueue;
-}
-
-async function loadLocalData() {
-    appData = normalizeData(null);
-    cloudRevision = 0;
-    pendingMutations = new Map();
-
+  function saveCollapsed() {
     try {
-        const db = await openLocalDb();
-        const [promptRows, outboxRows] = await Promise.all([
-            readUserStore('prompts', currentUser.id),
-            readUserStore('outbox', currentUser.id)
-        ]);
-        const metaTransaction = db.transaction('meta', 'readonly');
-        const meta = await idbRequest(metaTransaction.objectStore('meta').get(currentUser.id));
-        await idbTransactionDone(metaTransaction);
+      localStorage.setItem('ps.collapsed.v1', JSON.stringify([...state.collapsedCategories]));
+    } catch (e) { /* private mode */ }
+  }
 
-        appData.prompts = promptRows.map(({ userId, ...prompt }) => normalizeData({ prompts: [prompt] }).prompts[0]);
-        pendingMutations = new Map(outboxRows.map(({ userId, ...mutation }) => [Number(mutation.id), mutation]));
-        cloudRevision = Number(meta?.cloudRevision || 0);
+  // ─────────────────────────────────────────────
+  // DOM
+  // ─────────────────────────────────────────────
 
-        // One-time migration from the former whole-document localStorage cache.
-        const legacyRaw = localStorage.getItem('promptManagerData');
-        if (legacyRaw && appData.prompts.length === 0 && pendingMutations.size === 0) {
-            const legacy = normalizeData(JSON.parse(legacyRaw));
-            appData = legacy;
-            const changes = legacy.prompts.map(prompt => createUpsertMutation(prompt));
-            const deletions = legacy.deleted.map(item => createDeleteMutation({
-                id: item.id,
-                deletedAt: item.deletedAt,
-                revision: 0
-            }));
-            [...changes, ...deletions].forEach(mutation => pendingMutations.set(mutation.id, mutation));
-            await persistLocalBatch({
-                upserts: legacy.prompts,
-                outboxPuts: [...changes, ...deletions]
-            });
-        }
-        localStorage.removeItem('promptManagerData');
-    } catch (error) {
-        console.error('Error loading local data:', error);
-        appData = normalizeData(null);
-        cloudRevision = 0;
-        pendingMutations = new Map();
-        showToast('Local offline storage is unavailable; cloud sync will still work for this session.');
+  const $ = id => document.getElementById(id);
+
+  const el = {
+    authScreen: $('auth-screen'),
+    appContainer: $('app-container'),
+    loginForm: $('login-form'),
+    loginEmail: $('login-email'),
+    loginPassword: $('login-password'),
+    loginError: $('login-error'),
+    loginSubmit: $('login-submit'),
+
+    sidebar: $('workspace-sidebar'),
+    sidebarBackdrop: $('sidebar-backdrop'),
+    sidebarCloseBtn: $('sidebar-close-btn'),
+    mobileMenuBtn: $('mobile-menu-btn'),
+    sidebarCategories: $('sidebar-categories'),
+    sidebarSyncBtn: $('sidebar-sync-btn'),
+    sidebarSyncLabel: $('sidebar-sync-label'),
+    sidebarAccountEmail: $('sidebar-account-email'),
+    sidebarSettingsBtn: $('sidebar-settings-btn'),
+
+    contextEyebrow: $('context-eyebrow'),
+    viewTitle: $('current-view-title'),
+    resultCount: $('current-result-count'),
+    searchBar: $('search-bar'),
+    searchInput: $('search-input'),
+    clearSearchBtn: $('clear-search-btn'),
+    saveState: $('save-state'),
+    saveStateLabel: $('save-state-label'),
+    themeToggle: $('theme-toggle'),
+    syncBtn: $('sync-btn'),
+    settingsBtn: $('settings-btn'),
+
+    viewList: $('view-list'),
+    viewWorkshop: $('view-workshop'),
+    viewHistory: $('view-history'),
+    categoryFilter: $('category-filter'),
+    sortSelect: $('sort-select'),
+    promptsContainer: $('prompts-container'),
+    detailPanel: $('detail-panel'),
+    detailEmpty: $('detail-empty'),
+    detailContent: $('detail-content'),
+    categoryList: $('category-list'),
+
+    workshopList: $('workshop-list'),
+    workshopSelectedName: $('workshop-selected-name'),
+    workshopInput: $('workshop-input'),
+    workshopModelLabel: $('workshop-model-label'),
+    workshopClearBtn: $('workshop-clear-btn'),
+    workshopRunBtn: $('workshop-run-btn'),
+    workshopStopBtn: $('workshop-stop-btn'),
+    workshopOutputPane: $('workshop-output-pane'),
+    workshopOutputBack: $('workshop-output-back'),
+    workshopOutput: $('workshop-output'),
+    workshopReceipt: $('workshop-receipt'),
+    workshopOutputActions: $('workshop-output-actions'),
+    workshopCopyBtn: $('workshop-copy-btn'),
+    workshopSaveLibraryBtn: $('workshop-save-library-btn'),
+    workshopSaveScratchBtn: $('workshop-save-scratch-btn'),
+    workshopDiscardBtn: $('workshop-discard-btn'),
+
+    historyRange: $('history-range'),
+    historyProvider: $('history-provider'),
+    historyStatus: $('history-status'),
+    historyUnsaved: $('history-unsaved'),
+    historySelectBtn: $('history-select-btn'),
+    historySelectionBar: $('history-selection-bar'),
+    historySelectAll: $('history-select-all'),
+    historySelectionCount: $('history-selection-count'),
+    historyCancelSelect: $('history-cancel-select'),
+    historyDeleteBtn: $('history-delete-btn'),
+    historyList: $('history-list'),
+
+    promptDialog: $('prompt-dialog'),
+    promptDialogTitle: $('prompt-dialog-title'),
+    promptForm: $('prompt-form'),
+    promptTitle: $('prompt-title'),
+    promptSection: $('prompt-section'),
+    promptCategory: $('prompt-category'),
+    promptTags: $('prompt-tags'),
+    promptText: $('prompt-text'),
+    promptNotes: $('prompt-notes'),
+    editorCount: $('editor-count'),
+    workshopHint: $('workshop-hint'),
+
+    settingsDialog: $('settings-dialog'),
+    accountEmail: $('account-email'),
+    cloudStatus: $('cloud-status'),
+    settingsProvider: $('settings-provider'),
+    providerRows: $('provider-rows'),
+    settingsEffort: $('settings-effort'),
+    settingsMaxTokens: $('settings-max-tokens'),
+    settingsScratchDays: $('settings-scratch-days'),
+    settingsRunsDays: $('settings-runs-days'),
+    sweepSummary: $('sweep-summary'),
+    runSweepBtn: $('run-sweep-btn'),
+    exportBtn: $('export-btn'),
+    signOutBtn: $('sign-out-btn'),
+
+    confirmDialog: $('confirm-dialog'),
+    confirmTitle: $('confirm-title'),
+    confirmDescription: $('confirm-description'),
+    confirmAcceptBtn: $('confirm-accept-btn'),
+
+    runDialog: $('run-dialog'),
+    runDialogTitle: $('run-dialog-title'),
+    runDetailBody: $('run-detail-body'),
+    runCopyInput: $('run-copy-input'),
+    runCopyOutput: $('run-copy-output'),
+
+    paletteDialog: $('palette-dialog'),
+    paletteInput: $('palette-input'),
+    paletteResults: $('palette-results'),
+
+    fab: $('fab'),
+    tabbar: document.querySelector('.mobile-tabbar')
+  };
+
+  // Editor state, separate from view state because it only exists
+  // while the prompt dialog is open.
+  let editState = { editing: false, id: null };
+
+  // ─────────────────────────────────────────────
+  // UTILITIES
+  // ─────────────────────────────────────────────
+
+  function escapeHtml(unsafe) {
+    if (unsafe === null || unsafe === undefined) return '';
+    return String(unsafe)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function showToast(message, actionLabel, onAction) {
+    let toast = $('toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'toast';
+      toast.className = 'toast';
+      document.body.appendChild(toast);
     }
-}
+    toast.innerHTML = '';
+    const span = document.createElement('span');
+    span.textContent = message;
+    toast.appendChild(span);
+    if (actionLabel && onAction) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'toast-action';
+      button.textContent = actionLabel;
+      button.addEventListener('click', () => {
+        toast.classList.remove('show');
+        onAction();
+      });
+      toast.appendChild(button);
+    }
+    toast.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => toast.classList.remove('show'), actionLabel ? 5000 : 3000);
+  }
 
-function createUpsertMutation(prompt, expectedRevision = null) {
-    const previous = pendingMutations.get(Number(prompt.id));
-    return {
-        id: Number(prompt.id),
-        action: 'upsert',
-        expectedRevision: Number(expectedRevision ?? previous?.expectedRevision ?? prompt.revision ?? 0),
-        prompt: { ...prompt },
-        mutationId: `${Date.now()}-${++mutationSequence}`
-    };
-}
+  // Single source of truth for the desktop breakpoint. The CSS uses
+  // 1024 for the two-pane layout; if one moves the other must too.
+  function isDesktop() {
+    return window.matchMedia('(min-width: 1024px)').matches;
+  }
 
-function createDeleteMutation({ id, deletedAt, revision }) {
-    const previous = pendingMutations.get(Number(id));
-    return {
-        id: Number(id),
-        action: 'delete',
-        deletedAt: Number(deletedAt || Date.now()),
-        expectedRevision: Number(previous?.expectedRevision ?? revision ?? 0),
-        mutationId: `${Date.now()}-${++mutationSequence}`
-    };
-}
+  function isPhone() {
+    return window.matchMedia('(max-width: 699px)').matches;
+  }
 
-function saveLocalData(changedPrompts = [], deletedRecords = []) {
-    appData.lastModified = Date.now();
-    const mutations = [
-        ...changedPrompts.map(prompt => createUpsertMutation(prompt)),
-        ...deletedRecords.map(record => createDeleteMutation(record))
-    ];
-    mutations.forEach(mutation => pendingMutations.set(mutation.id, mutation));
-    void persistLocalBatch({
-        upserts: changedPrompts,
-        deletes: deletedRecords.map(record => record.id),
-        outboxPuts: mutations
+  function formatDate(ms) {
+    if (!ms) return '';
+    return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  function formatDateTime(ms) {
+    if (!ms) return '';
+    return new Date(ms).toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
     });
+  }
+
+  function counts(text) {
+    const chars = (text || '').length;
+    const tokens = Math.max(1, Math.round(chars / 4));
+    return `${chars.toLocaleString()} chars · ~${tokens.toLocaleString()} tokens`;
+  }
+
+  function formatCost(value) {
+    const n = Number(value) || 0;
+    if (n === 0) return '$0';
+    if (n < 0.01) return `$${n.toFixed(4)}`;
+    return `$${n.toFixed(3)}`;
+  }
+
+  function copyText(text, label) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast(label || 'Copied to clipboard.'))
+      .catch(() => showToast('Unable to copy. Select the text and copy it manually.'));
+  }
+
+  // ─────────────────────────────────────────────
+  // DIALOG HELPERS
+  // ─────────────────────────────────────────────
+
+  // Native <dialog> gives the focus trap, Esc handling and inert
+  // background for free — the v1 hand-rolled versions of all three
+  // are gone.
+  function openDialog(dialog, preferredFocus) {
+    if (!dialog || dialog.open) return;
+    dialog.showModal();
+    requestAnimationFrame(() => {
+      const target = preferredFocus || dialog.querySelector('input, textarea, select, button');
+      if (target) target.focus();
+    });
+  }
+
+  function closeDialog(dialog) {
+    if (dialog && dialog.open) dialog.close();
+  }
+
+  // Drag-down-to-dismiss on the phone bottom sheets.
+  function wireSheetDrag(dialog) {
+    const handle = dialog.querySelector('[data-sheet-drag]');
+    const inner = dialog.querySelector('.sheet-inner');
+    if (!handle || !inner) return;
+    let startY = 0;
+    let delta = 0;
+    let dragging = false;
+
+    handle.addEventListener('pointerdown', event => {
+      if (!isPhone()) return;
+      dragging = true;
+      startY = event.clientY;
+      delta = 0;
+      inner.style.transition = 'none';
+      try { handle.setPointerCapture(event.pointerId); } catch (e) { /* older browsers */ }
+    });
+
+    handle.addEventListener('pointermove', event => {
+      if (!dragging) return;
+      delta = Math.max(0, event.clientY - startY);
+      inner.style.transform = `translateY(${delta}px)`;
+    });
+
+    function end() {
+      if (!dragging) return;
+      dragging = false;
+      inner.style.transition = '';
+      inner.style.transform = '';
+      if (delta > 110) closeDialog(dialog);
+    }
+
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  }
+
+  [el.promptDialog, el.settingsDialog, el.confirmDialog, el.runDialog].forEach(wireSheetDrag);
+
+  // Backdrop click closes. A <dialog> reports clicks on its backdrop
+  // as clicks on the dialog element itself, so compare the target.
+  document.querySelectorAll('dialog').forEach(dialog => {
+    dialog.addEventListener('click', event => {
+      if (event.target === dialog) closeDialog(dialog);
+    });
+  });
+
+  document.addEventListener('click', event => {
+    const closer = event.target.closest('[data-close-dialog]');
+    if (closer) {
+      const dialog = closer.closest('dialog');
+      closeDialog(dialog);
+    }
+  });
+
+  function confirmAction({ title, description, confirmLabel, onConfirm }) {
+    el.confirmTitle.textContent = title;
+    el.confirmDescription.textContent = description;
+    el.confirmAcceptBtn.innerHTML = `<i class="fas fa-trash"></i> ${escapeHtml(confirmLabel || 'Delete')}`;
+    state.pendingConfirm = onConfirm;
+    openDialog(el.confirmDialog, el.confirmAcceptBtn);
+  }
+
+  el.confirmAcceptBtn.addEventListener('click', () => {
+    const action = state.pendingConfirm;
+    state.pendingConfirm = null;
+    closeDialog(el.confirmDialog);
+    if (action) action();
+  });
+
+  el.confirmDialog.addEventListener('close', () => { state.pendingConfirm = null; });
+
+  // ─────────────────────────────────────────────
+  // THEME
+  // ─────────────────────────────────────────────
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    const isDark = theme === 'dark';
+    el.themeToggle.innerHTML = `<i class="fas fa-${isDark ? 'sun' : 'moon'}"></i>`;
+    el.themeToggle.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = isDark ? '#0b1120' : '#f5f7fb';
+  }
+
+  el.themeToggle.addEventListener('click', () => {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    Settings.writePrefs({ theme: next });
+    applyTheme(next);
+  });
+
+  // ─────────────────────────────────────────────
+  // SECTIONS
+  // ─────────────────────────────────────────────
+
+  const SECTION_META = {
+    library:  { title: 'Library',  eyebrow: 'Long-term prompts',  view: 'list' },
+    workshop: { title: 'Workshop', eyebrow: 'Meta-prompts and runs', view: 'workshop' },
+    scratch:  { title: 'Scratch',  eyebrow: 'One-time drafts',    view: 'list' },
+    history:  { title: 'History',  eyebrow: 'Every API run',      view: 'history' }
+  };
+
+  function setSection(section) {
+    if (!SECTION_META[section]) return;
+    state.section = section;
+    state.selectedPromptId = null;
+    state.pinnedOnly = false;
+    state.category = '';
+    el.categoryFilter.value = '';
+    Settings.writePrefs({ section });
+
+    document.body.className = document.body.className
+      .replace(/\bsection-\w+\b/g, '').trim();
+    document.body.classList.add(`section-${section}`);
+
+    const meta = SECTION_META[section];
+    el.viewList.hidden = meta.view !== 'list';
+    el.viewWorkshop.hidden = meta.view !== 'workshop';
+    el.viewHistory.hidden = meta.view !== 'history';
+    el.searchBar.hidden = section === 'history';
+
+    document.querySelectorAll('[data-section]').forEach(button => {
+      button.classList.toggle('active', button.dataset.section === section);
+    });
+
+    closeSidebar();
+    render();
+  }
+
+  // ─────────────────────────────────────────────
+  // RENDER — top level
+  // ─────────────────────────────────────────────
+
+  function render() {
+    const all = Cloud.getPrompts();
+    const runs = Cloud.getRuns();
+
+    $('count-library').textContent = all.filter(p => p.section === 'library').length;
+    $('count-workshop').textContent = all.filter(p => p.section === 'workshop').length;
+    $('count-scratch').textContent = all.filter(p => p.section === 'scratch').length;
+    $('count-history').textContent = runs.length;
+    $('count-pinned').textContent = all.filter(p => p.pinned).length;
+
+    const meta = SECTION_META[state.section];
+    el.contextEyebrow.textContent = meta.eyebrow;
+
+    if (meta.view === 'list') renderList();
+    else if (meta.view === 'workshop') renderWorkshop();
+    else renderHistory();
+
     populateCategories();
-    queueCloudSave();
-}
+  }
 
-function normalizeData(raw) {
-    const source = raw && typeof raw === 'object' ? raw : {};
-    const prompts = Array.isArray(source.prompts)
-        ? source.prompts.filter(p => p && Number.isFinite(Number(p.id))).map(p => ({
-            ...p,
-            id: Number(p.id),
-            title: String(p.title || ''),
-            text: String(p.text || ''),
-            category: String(p.category || ''),
-            tags: Array.isArray(p.tags) ? p.tags.map(String) : [],
-            notes: String(p.notes || ''),
-            pinned: Boolean(p.pinned),
-            createdAt: Number(p.createdAt || p.id || Date.now()),
-            updatedAt: Number(p.updatedAt || p.createdAt || p.id || Date.now()),
-            order: Number.isFinite(Number(p.order)) ? Number(p.order) : Number(p.createdAt || p.id || Date.now()),
-            revision: Number(p.revision || 0)
-        }))
-        : [];
-    const deleted = Array.isArray(source.deleted)
-        ? source.deleted
-            .filter(item => item && Number.isFinite(Number(item.id)))
-            .map(item => ({ id: Number(item.id), deletedAt: Number(item.deletedAt || 0) }))
-        : [];
+  function sectionPrompts() {
+    return Cloud.getPrompts().filter(p => p.section === state.section);
+  }
 
-    return {
-        lastModified: Number(source.lastModified || 0),
-        prompts,
-        deleted
-    };
-}
-
-// Ensures every prompt has a numeric `order` field, used for Custom Order
-// sort/drag-and-drop. Existing prompts from an older backup fall back to
-// their creation time so their initial
-// custom order matches the order they were originally added in.
-function ensureOrderField() {
-    appData.prompts.forEach(p => {
-        if (typeof p.order !== 'number') {
-            p.order = p.createdAt || p.id || Date.now();
-        }
+  function filteredPrompts() {
+    const term = state.search.trim().toLowerCase();
+    return sectionPrompts().filter(p => {
+      const matchesSearch = !term ||
+        p.title.toLowerCase().includes(term) ||
+        p.text.toLowerCase().includes(term) ||
+        p.category.toLowerCase().includes(term) ||
+        p.notes.toLowerCase().includes(term) ||
+        (p.tags || []).some(t => t.toLowerCase().includes(term));
+      const matchesCategory = !state.category || p.category === state.category;
+      const matchesPinned = !state.pinnedOnly || p.pinned;
+      return matchesSearch && matchesCategory && matchesPinned;
     });
-}
+  }
 
-// ---------------------------------------------------------------------------
-// Render
-//
-// Category open/closed state is kept in `collapsedCategories` (persisted), NOT
-// in the DOM. Every re-render reapplies it, so reordering, editing, or toggling
-// a prompt body no longer snaps categories shut. A category is OPEN by default
-// and only closed if the user explicitly collapsed it.
-//
-// A virtual "Pinned" section renders first when any filtered prompt has
-// `pinned: true`. Pinned prompts appear BOTH there and in their real category;
-// the pinned copies are never reorderable (order is owned by the home
-// category). The pinned flag lives on the prompt object, so it syncs through
-// Supabase across devices.
-// ---------------------------------------------------------------------------
-function renderPrompts() {
-    const searchTerm = searchInput.value.toLowerCase();
-    const category = categoryFilter.value;
-    const sort = sortSelect.value;
-    const isFiltering = searchTerm.length > 0 || category !== '' || showPinnedOnly;
-    // Reordering is only active in Custom Order and only on an unfiltered list
-    // (reordering a filtered subset would silently move hidden items).
-    const canReorder = sort === 'custom' && !isFiltering;
-
-    const filtered = appData.prompts.filter(p => {
-        const matchesSearch = p.title.toLowerCase().includes(searchTerm) ||
-                               p.text.toLowerCase().includes(searchTerm) ||
-                               p.category.toLowerCase().includes(searchTerm) ||
-                               p.notes.toLowerCase().includes(searchTerm) ||
-                               (p.tags && p.tags.some(t => t.toLowerCase().includes(searchTerm)));
-        const matchesCategory = category === "" || p.category === category;
-        const matchesPinned = !showPinnedOnly || p.pinned;
-        return matchesSearch && matchesCategory && matchesPinned;
+  function sortPrompts(list) {
+    const sort = state.sort;
+    return list.sort((a, b) => {
+      if (sort === 'date-desc') return b.updatedAt - a.updatedAt;
+      if (sort === 'date-asc') return a.updatedAt - b.updatedAt;
+      if (sort === 'name-asc') return a.title.localeCompare(b.title);
+      if (sort === 'name-desc') return b.title.localeCompare(a.title);
+      if (sort === 'custom') return (a.order || 0) - (b.order || 0);
+      return 0;
     });
+  }
 
-    promptsContainer.innerHTML = '';
-    updateWorkspaceNavigation(filtered.length, category, searchTerm);
+  // ─────────────────────────────────────────────
+  // RENDER — list (Library / Scratch)
+  // ─────────────────────────────────────────────
 
-    if (selectedPromptId && !filtered.some(prompt => prompt.id === selectedPromptId)) {
-        selectedPromptId = null;
+  function renderList() {
+    const filtered = filteredPrompts();
+    const isFiltering = Boolean(state.search.trim() || state.category || state.pinnedOnly);
+    // Reordering only makes sense on an unfiltered list — reordering a
+    // subset would silently move the hidden items too.
+    const canReorder = state.sort === 'custom' && !isFiltering;
+
+    el.viewTitle.textContent = state.pinnedOnly
+      ? `${SECTION_META[state.section].title} · Pinned`
+      : (state.category || SECTION_META[state.section].title);
+    el.resultCount.textContent = filtered.length;
+
+    el.promptsContainer.innerHTML = '';
+
+    if (state.selectedPromptId && !filtered.some(p => p.id === state.selectedPromptId)) {
+      state.selectedPromptId = null;
     }
-    if (!selectedPromptId && filtered.length && window.matchMedia('(min-width: 1000px)').matches) {
-        selectedPromptId = filtered[0].id;
-    }
-
-    if (filtered.length === 0) {
-        const firstPrompt = appData.prompts.length === 0;
-        promptsContainer.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-state-icon"><i class="fas fa-${firstPrompt ? 'wand-magic-sparkles' : 'magnifying-glass'}"></i></div>
-                <h2>${firstPrompt ? 'Create your first prompt' : 'No matching prompts'}</h2>
-                <p>${firstPrompt ? 'Build a private, searchable library of the prompts you use most.' : 'Try another search, category, or library view.'}</p>
-                ${firstPrompt ? '<button class="btn" type="button" data-open-prompt><i class="fas fa-plus"></i> New prompt</button>' : '<button class="btn btn-secondary" type="button" data-action="clear-filters"><i class="fas fa-xmark"></i> Clear filters</button>'}
-            </div>`;
-        renderDetail();
-        return;
-    }
-
-    if (sort === 'custom' && !isFiltering) {
-        const hint = document.createElement('div');
-        hint.className = 'reorder-hint';
-        hint.innerHTML = '<i class="fas fa-grip-vertical"></i> Drag the handle — or use the up/down arrows — to reorder within a category. Saved automatically.';
-        promptsContainer.appendChild(hint);
-    } else if (sort === 'custom' && isFiltering) {
-        const hint = document.createElement('div');
-        hint.className = 'reorder-hint';
-        hint.innerHTML = '<i class="fas fa-circle-info"></i> Clear search and category filters to reorder prompts.';
-        promptsContainer.appendChild(hint);
+    if (!state.selectedPromptId && filtered.length && isDesktop()) {
+      state.selectedPromptId = filtered[0].id;
     }
 
-    if (showPinnedOnly) {
-        sortPrompts(filtered, sort);
-        promptsContainer.appendChild(
-            buildCategorySection(PINNED_SECTION, filtered, false, true, 'pinned-section')
-        );
-        renderDetail();
-        return;
+    if (!filtered.length) {
+      const first = sectionPrompts().length === 0;
+      el.promptsContainer.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon"><i class="fas fa-${first ? 'wand-magic-sparkles' : 'magnifying-glass'}"></i></div>
+          <h2>${first ? `Nothing in ${escapeHtml(SECTION_META[state.section].title)} yet` : 'No matching prompts'}</h2>
+          <p>${first
+            ? (state.section === 'workshop'
+              ? 'Meta-prompts live here — the prompts that engineer your other prompts.'
+              : 'Build a private, searchable library of the prompts you use most.')
+            : 'Try another search, category, or view.'}</p>
+          ${first
+            ? '<button class="btn" type="button" data-open-prompt><i class="fas fa-plus"></i> New prompt</button>'
+            : '<button class="btn btn-secondary" type="button" data-action="clear-filters"><i class="fas fa-xmark"></i> Clear filters</button>'}
+        </div>`;
+      renderDetail();
+      return;
     }
 
-    // Virtual pinned section (respects the active search/filter).
+    if (state.sort === 'custom') {
+      const hint = document.createElement('div');
+      hint.className = 'reorder-hint';
+      hint.innerHTML = isFiltering
+        ? '<i class="fas fa-circle-info"></i> Clear search and category filters to reorder prompts.'
+        : '<i class="fas fa-grip-vertical"></i> Drag the handle — or use the up/down arrows — to reorder within a category. Saved automatically.';
+      el.promptsContainer.appendChild(hint);
+    }
+
     const pinned = filtered.filter(p => p.pinned);
-    if (pinned.length > 0) {
-        sortPrompts(pinned, sort);
-        // Pinned copies are never reorderable — order belongs to the home category.
-        promptsContainer.appendChild(
-            buildCategorySection(PINNED_SECTION, pinned, false, isFiltering, 'pinned-section')
-        );
+    if (pinned.length && !state.pinnedOnly) {
+      el.promptsContainer.appendChild(
+        buildCategorySection('Pinned', sortPrompts(pinned.slice()), false, isFiltering, 'pinned-section')
+      );
     }
 
-    // Group by category
     const grouped = {};
     filtered.forEach(p => {
-        const cat = p.category || 'Uncategorized';
-        (grouped[cat] = grouped[cat] || []).push(p);
+      const cat = p.category || 'Uncategorized';
+      (grouped[cat] = grouped[cat] || []).push(p);
     });
 
-    const sortedCategories = Object.keys(grouped).sort((a, b) => {
-        if (a === 'Uncategorized') return 1;
-        if (b === 'Uncategorized') return -1;
-        return a.localeCompare(b);
-    });
-
-    sortedCategories.forEach(cat => {
-        const catPrompts = grouped[cat];
-        sortPrompts(catPrompts, sort);
-        promptsContainer.appendChild(
-            buildCategorySection(cat, catPrompts, canReorder, isFiltering, '')
-        );
+    Object.keys(grouped).sort((a, b) => {
+      if (a === 'Uncategorized') return 1;
+      if (b === 'Uncategorized') return -1;
+      return a.localeCompare(b);
+    }).forEach(cat => {
+      el.promptsContainer.appendChild(
+        buildCategorySection(cat, sortPrompts(grouped[cat]), canReorder, isFiltering, '')
+      );
     });
 
     renderDetail();
-}
+  }
 
-function updateWorkspaceNavigation(resultCount, category, searchTerm) {
-    allPromptsCount.textContent = appData.prompts.length;
-    pinnedPromptsCount.textContent = appData.prompts.filter(prompt => prompt.pinned).length;
-    currentResultCount.textContent = resultCount;
-
-    let title = 'All prompts';
-    if (showPinnedOnly) title = 'Pinned';
-    else if (category) title = category;
-    else if (searchTerm) title = 'Search results';
-    currentViewTitle.textContent = title;
-
-    document.querySelectorAll('[data-nav-mode]').forEach(button => {
-        const active = button.dataset.navMode === (showPinnedOnly ? 'pinned' : (!category ? 'all' : ''));
-        button.classList.toggle('active', active);
-    });
-    sidebarCategories.querySelectorAll('[data-category]').forEach(button => {
-        button.classList.toggle('active', !showPinnedOnly && button.dataset.category === category);
-    });
-    document.querySelectorAll('.mobile-tab[data-mobile-action]').forEach(button => {
-        const action = button.dataset.mobileAction;
-        button.classList.toggle('active', (action === 'pinned' && showPinnedOnly) || (action === 'library' && !showPinnedOnly));
-    });
-}
-
-// Builds one collapsible category section. Extracted so the virtual Pinned
-// section and the real categories share identical behavior (open/closed
-// persistence, header toggle, grid/view classes).
-function buildCategorySection(cat, catPrompts, canReorder, isFiltering, extraClass) {
+  function buildCategorySection(cat, list, canReorder, isFiltering, extraClass) {
     const section = document.createElement('div');
     section.className = 'category-section' + (extraClass ? ' ' + extraClass : '');
-    // Open if filtering (show all matches) or not explicitly collapsed.
-    const isOpen = isFiltering || !collapsedCategories.has(cat);
+    const isOpen = isFiltering || !state.collapsedCategories.has(cat);
     if (isOpen) section.classList.add('expanded');
 
-    const contentId = `category-content-${String(cat).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${catPrompts[0]?.id || 'empty'}`;
+    const contentId = `cat-${String(cat).replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${list[0] ? list[0].id : 'empty'}`;
+
     const header = document.createElement('button');
     header.type = 'button';
     header.className = 'category-header';
     header.setAttribute('aria-expanded', String(isOpen));
     header.setAttribute('aria-controls', contentId);
-    header.addEventListener('click', () => {
-        const nowOpen = section.classList.toggle('expanded');
-        header.setAttribute('aria-expanded', String(nowOpen));
-        if (nowOpen) collapsedCategories.delete(cat);
-        else collapsedCategories.add(cat);
-        saveCollapsedState();
-    });
     header.innerHTML = `
-        <i class="fas fa-chevron-right arrow-icon"></i>
-        <h2>${escapeHtml(cat)}</h2>
-        <span class="category-count">${catPrompts.length}</span>
-    `;
+      <i class="fas fa-chevron-right arrow-icon"></i>
+      <h2>${escapeHtml(cat)}</h2>
+      <span class="category-count">${list.length}</span>`;
+    header.addEventListener('click', () => {
+      const nowOpen = section.classList.toggle('expanded');
+      header.setAttribute('aria-expanded', String(nowOpen));
+      if (nowOpen) state.collapsedCategories.delete(cat);
+      else state.collapsedCategories.add(cat);
+      saveCollapsed();
+    });
 
     const content = document.createElement('div');
     content.className = 'category-content';
     content.id = contentId;
-    const contentInner = document.createElement('div');
-    contentInner.className = 'category-content-inner';
-
+    const inner = document.createElement('div');
+    inner.className = 'category-content-inner';
     const grid = document.createElement('div');
-    grid.className = 'prompts-grid view-' + currentView;
+    grid.className = 'prompts-grid view-' + state.view;
 
-    catPrompts.forEach((p, idx) => {
-        grid.appendChild(createItem(p, cat, canReorder, idx, catPrompts.length));
-    });
+    list.forEach((p, index) => grid.appendChild(createItem(p, cat, canReorder, index, list.length)));
 
-    contentInner.appendChild(grid);
-    content.appendChild(contentInner);
+    inner.appendChild(grid);
+    content.appendChild(inner);
     section.appendChild(header);
     section.appendChild(content);
     return section;
-}
+  }
 
-function sortPrompts(list, sort) {
-    list.sort((a, b) => {
-        if (sort === 'date-desc') return b.updatedAt - a.updatedAt;
-        if (sort === 'date-asc') return a.updatedAt - b.updatedAt;
-        if (sort === 'name-asc') return a.title.localeCompare(b.title);
-        if (sort === 'name-desc') return b.title.localeCompare(a.title);
-        if (sort === 'custom') return (a.order ?? 0) - (b.order ?? 0);
-        return 0;
-    });
-}
-
-function populateCategories() {
-    const categories = new Set(appData.prompts.map(p => p.category).filter(c => c));
-    const sortedCategories = [...categories].sort((a, b) => a.localeCompare(b));
-
-    // Update datalist (used by the Add/Edit form's category input)
-    categoryList.innerHTML = '';
-    sortedCategories.forEach(c => {
-        const option = document.createElement('option');
-        option.value = c;
-        categoryList.appendChild(option);
-    });
-
-    // Update the filter dropdown, preserving the current selection
-    const currentFilter = categoryFilter.value;
-    categoryFilter.innerHTML = '<option value="">All categories</option>';
-    sortedCategories.forEach(c => {
-        const option = document.createElement('option');
-        option.value = c;
-        option.textContent = c;
-        categoryFilter.appendChild(option);
-    });
-    categoryFilter.value = currentFilter;
-
-    sidebarCategories.innerHTML = '';
-    sortedCategories.forEach(category => {
-        const count = appData.prompts.filter(prompt => prompt.category === category).length;
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'nav-item';
-        button.dataset.category = category;
-        button.innerHTML = '<span><i class="fas fa-folder"></i><span class="nav-category-name"></span></span><span class="nav-count"></span>';
-        button.querySelector('.nav-category-name').textContent = category;
-        button.querySelector('.nav-count').textContent = count;
-        sidebarCategories.appendChild(button);
-    });
-    updateWorkspaceNavigation(
-        Number(currentResultCount.textContent || appData.prompts.length),
-        categoryFilter.value,
-        searchInput.value.trim().toLowerCase()
-    );
-}
-
-// Whether a body is long enough to warrant a Show more / less control in the
-// current view. Large view always shows the full body, so never needs one.
-function bodyNeedsToggle(text) {
+  function bodyNeedsToggle(text) {
     if (!text) return false;
-    const lineBreaks = (text.match(/\n/g) || []).length;
-    if (currentView === 'compact') return text.length > 60 || lineBreaks >= 1;
-    if (currentView === 'list') return text.length > 170 || lineBreaks >= 3;
-    return text.length > 300 || lineBreaks >= 5;
-}
+    const breaks = (text.match(/\n/g) || []).length;
+    if (state.view === 'compact') return text.length > 60 || breaks >= 1;
+    if (state.view === 'list') return text.length > 170 || breaks >= 3;
+    return text.length > 300 || breaks >= 5;
+  }
 
-// Character + rough token count for a prompt body. Tokens are estimated at
-// ~4 characters/token (the common English heuristic) — close enough to judge
-// whether a prompt fits a context window, which is all a card needs.
-function countsFor(text) {
-    const chars = (text || '').length;
-    const tokens = Math.max(1, Math.round(chars / 4));
-    if (currentView === 'large') {
-        return `${chars.toLocaleString()} chars · ~${tokens.toLocaleString()} tokens`;
-    }
-    return `${chars.toLocaleString()} ch · ~${tokens.toLocaleString()} tok`;
-}
+  function expiryChip(prompt) {
+    if (prompt.section !== 'scratch' || !prompt.expiresAt) return '';
+    const remaining = prompt.expiresAt - Date.now();
+    if (remaining <= 0) return '<span class="expiry-chip is-expired">Expired</span>';
+    const days = Math.ceil(remaining / 86400000);
+    return `<span class="expiry-chip">Expires in ${days}d</span>`;
+  }
 
-// One unified item component for all three views. The view is expressed purely
-// through the container class (view-large / view-list / view-compact), which
-// drives how much of the body shows when collapsed. The full body text is
-// ALWAYS in the DOM, so expand/collapse is a pure CSS class toggle with no
-// re-render — which is what makes it reliable on mobile.
-function createItem(p, cat, canReorder, idx, total) {
+  function createItem(p, cat, canReorder, index, total) {
     const item = document.createElement('div');
     item.className = 'prompt-item';
     item.dataset.id = p.id;
     item.dataset.category = cat;
-    if (selectedPromptId === p.id) item.classList.add('is-selected');
+    if (state.selectedPromptId === p.id) item.classList.add('is-selected');
+    if (state.expandedIds.has(p.id)) item.classList.add('is-expanded');
 
-    const expanded = expandedIds.has(p.id);
-    if (expanded) item.classList.add('is-expanded');
-
-    const tagsHtml = (p.tags && p.tags.length)
-        ? p.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('')
-        : '';
-    const updated = p.updatedAt ? new Date(p.updatedAt).toLocaleDateString() : '';
-    const needsToggle = bodyNeedsToggle(p.text);
-    const largeView = currentView === 'large';
-    const counts = countsFor(p.text);
+    const tagsHtml = (p.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+    const updated = formatDate(p.updatedAt);
+    const largeView = state.view === 'large';
+    const countText = counts(p.text);
 
     const reorderBtns = canReorder ? `
-        <button class="tool-btn" data-action="move" data-id="${p.id}" data-direction="-1" title="Move up" aria-label="Move up" ${idx === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
-        <button class="tool-btn" data-action="move" data-id="${p.id}" data-direction="1" title="Move down" aria-label="Move down" ${idx === total - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>` : '';
+      <button class="tool-btn" data-action="move" data-id="${p.id}" data-direction="-1" title="Move up" aria-label="Move up" ${index === 0 ? 'disabled' : ''}><i class="fas fa-arrow-up"></i></button>
+      <button class="tool-btn" data-action="move" data-id="${p.id}" data-direction="1" title="Move down" aria-label="Move down" ${index === total - 1 ? 'disabled' : ''}><i class="fas fa-arrow-down"></i></button>` : '';
 
-    // Pin/unpin star. Solid amber star = pinned; hollow star = not pinned.
     const pinBtn = `<button class="tool-btn pin-btn${p.pinned ? ' pinned' : ''}" data-action="pin" data-id="${p.id}" title="${p.pinned ? 'Unpin' : 'Pin to top'}" aria-label="${p.pinned ? 'Unpin' : 'Pin to top'}" aria-pressed="${p.pinned ? 'true' : 'false'}"><i class="${p.pinned ? 'fas' : 'far'} fa-star"></i></button>`;
-
-    // Large view gets a prominent Copy button in the footer, so the tools row
-    // there is edit/delete only. List/compact keep copy in the tools row.
     const copyInTools = largeView ? '' : `<button class="tool-btn" data-action="copy" data-id="${p.id}" title="Copy" aria-label="Copy ${escapeHtml(p.title)}"><i class="fas fa-copy"></i></button>`;
 
     item.innerHTML = `
-        <div class="item-top">
-            ${canReorder ? `<button class="drag-handle" aria-label="Drag to reorder" title="Drag to reorder"><i class="fas fa-grip-vertical"></i></button>` : ''}
-            <button class="prompt-open" type="button" data-action="open" data-id="${p.id}" aria-label="Open ${escapeHtml(p.title)}">
-                <span class="item-head">
-                    <span class="item-title">${escapeHtml(p.title)}</span>
-                    ${!largeView && updated ? `<span class="item-meta">${updated}</span>` : ''}
-                    ${!largeView ? `<span class="item-meta item-counts">${counts}</span>` : ''}
-                </span>
-            </button>
-            <div class="item-tools">
-                ${reorderBtns}
-                ${pinBtn}
-                ${copyInTools}
-                <button class="tool-btn" data-action="edit" data-id="${p.id}" title="Edit" aria-label="Edit ${escapeHtml(p.title)}"><i class="fas fa-pen"></i></button>
-                <button class="tool-btn danger" data-action="delete" data-id="${p.id}" title="Delete" aria-label="Delete ${escapeHtml(p.title)}"><i class="fas fa-trash"></i></button>
-            </div>
+      <div class="item-top">
+        ${canReorder ? '<button class="drag-handle" aria-label="Drag to reorder" title="Drag to reorder"><i class="fas fa-grip-vertical"></i></button>' : ''}
+        <button class="prompt-open" type="button" data-action="open" data-id="${p.id}" aria-label="Open ${escapeHtml(p.title)}">
+          <span class="item-head">
+            <span class="item-title">${escapeHtml(p.title)}</span>
+            ${!largeView && updated ? `<span class="item-meta">${escapeHtml(updated)}</span>` : ''}
+            ${!largeView ? `<span class="item-meta item-counts">${escapeHtml(countText)}</span>` : ''}
+          </span>
+        </button>
+        <div class="item-tools">
+          ${reorderBtns}
+          ${pinBtn}
+          ${copyInTools}
+          <button class="tool-btn" data-action="edit" data-id="${p.id}" title="Edit" aria-label="Edit ${escapeHtml(p.title)}"><i class="fas fa-pen"></i></button>
+          <button class="tool-btn danger" data-action="delete" data-id="${p.id}" title="Delete" aria-label="Delete ${escapeHtml(p.title)}"><i class="fas fa-trash"></i></button>
         </div>
-        ${tagsHtml ? `<div class="item-tags">${tagsHtml}</div>` : ''}
-        <div class="prompt-body">${escapeHtml(p.text)}</div>
-        ${needsToggle ? `<button class="preview-toggle" data-action="expand" data-id="${p.id}">${expanded
-            ? '<i class="fas fa-chevron-up"></i> Show less'
-            : '<i class="fas fa-chevron-down"></i> Show more'}</button>` : ''}
-        ${largeView ? `<div class="item-footer">
-            <button class="copy-btn" data-action="copy" data-id="${p.id}" aria-label="Copy ${escapeHtml(p.title)}"><i class="fas fa-copy"></i> Copy</button>
-            <span class="item-meta"><span class="item-counts">${counts}</span>${updated ? ` · Updated ${updated}` : ''}</span>
-        </div>` : ''}
-    `;
+      </div>
+      ${tagsHtml || expiryChip(p) ? `<div class="item-tags">${tagsHtml}${expiryChip(p)}</div>` : ''}
+      <div class="prompt-body">${escapeHtml(p.text)}</div>
+      ${bodyNeedsToggle(p.text) ? `<button class="preview-toggle" data-action="expand" data-id="${p.id}">${state.expandedIds.has(p.id)
+        ? '<i class="fas fa-chevron-up"></i> Show less'
+        : '<i class="fas fa-chevron-down"></i> Show more'}</button>` : ''}
+      ${largeView ? `<div class="item-footer">
+        <button class="copy-btn" data-action="copy" data-id="${p.id}" aria-label="Copy ${escapeHtml(p.title)}"><i class="fas fa-copy"></i> Copy</button>
+        <span class="item-meta"><span class="item-counts">${escapeHtml(countText)}</span>${updated ? ` · Updated ${escapeHtml(updated)}` : ''}</span>
+      </div>` : ''}`;
 
     if (canReorder) {
-        const handle = item.querySelector('.drag-handle');
-        if (handle) handle.addEventListener('pointerdown', (e) => startPointerDrag(e, item, p.id, cat));
+      const handle = item.querySelector('.drag-handle');
+      if (handle) handle.addEventListener('pointerdown', e => startDrag(e, item, p.id, cat));
     }
     return item;
-}
+  }
 
-function renderDetail() {
-    const prompt = appData.prompts.find(item => item.id === selectedPromptId);
+  function renderDetail() {
+    const prompt = Cloud.getPrompts().find(p => p.id === state.selectedPromptId);
     if (!prompt) {
-        detailEmpty.hidden = false;
-        detailContent.hidden = true;
-        detailContent.innerHTML = '';
-        return;
+      el.detailEmpty.hidden = false;
+      el.detailContent.hidden = true;
+      el.detailContent.innerHTML = '';
+      return;
     }
 
-    const tags = (prompt.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('');
-    const category = prompt.category || 'Uncategorized';
-    const updated = prompt.updatedAt ? new Date(prompt.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-    const created = prompt.createdAt ? new Date(prompt.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
-    const charCount = prompt.text.length;
-    const tokenCount = Math.max(1, Math.round(charCount / 4));
-    const counts = `${charCount.toLocaleString()} chars · ~${tokenCount.toLocaleString()} tokens`;
+    const tags = (prompt.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+    el.detailEmpty.hidden = true;
+    el.detailContent.hidden = false;
+    el.detailContent.innerHTML = `
+      <div class="detail-mobile-header">
+        <button class="detail-back" type="button" data-detail-action="close"><i class="fas fa-chevron-left"></i> Back</button>
+        <button class="icon-btn" type="button" data-detail-action="edit" aria-label="Edit"><i class="fas fa-pen"></i></button>
+      </div>
+      <div class="detail-kicker">
+        <span class="detail-category">${escapeHtml(prompt.category || 'Uncategorized')}</span>
+        <button class="tool-btn pin-btn${prompt.pinned ? ' pinned' : ''}" type="button" data-detail-action="pin" aria-label="${prompt.pinned ? 'Unpin' : 'Pin'}" aria-pressed="${prompt.pinned ? 'true' : 'false'}"><i class="${prompt.pinned ? 'fas' : 'far'} fa-star"></i></button>
+      </div>
+      <h2 class="detail-title">${escapeHtml(prompt.title)}</h2>
+      ${tags || expiryChip(prompt) ? `<div class="detail-tags">${tags}${expiryChip(prompt)}</div>` : ''}
+      <div class="detail-meta">
+        <span><i class="far fa-clock"></i> Updated ${escapeHtml(formatDate(prompt.updatedAt))}</span>
+        <span><i class="far fa-calendar"></i> Created ${escapeHtml(formatDate(prompt.createdAt))}</span>
+        <span class="item-counts"><i class="fas fa-text-width"></i> ${escapeHtml(counts(prompt.text))}</span>
+      </div>
+      <p class="detail-prompt-label">Prompt</p>
+      <div class="detail-prompt">${escapeHtml(prompt.text)}</div>
+      ${prompt.notes ? `<div class="detail-notes"><p class="detail-notes-label">Notes</p>${escapeHtml(prompt.notes)}</div>` : ''}
+      <div class="detail-actions">
+        <button class="btn" type="button" data-detail-action="copy"><i class="fas fa-copy"></i> Copy prompt</button>
+        ${prompt.section !== 'workshop'
+          ? '<button class="btn btn-secondary" type="button" data-detail-action="to-workshop"><i class="fas fa-screwdriver-wrench"></i> Move to Workshop</button>'
+          : '<button class="btn btn-secondary" type="button" data-detail-action="use"><i class="fas fa-play"></i> Use in Workshop</button>'}
+        <button class="icon-btn" type="button" data-detail-action="edit" aria-label="Edit"><i class="fas fa-pen"></i></button>
+        <button class="icon-btn danger" type="button" data-detail-action="delete" aria-label="Delete"><i class="fas fa-trash"></i></button>
+      </div>`;
+  }
 
-    detailEmpty.hidden = true;
-    detailContent.hidden = false;
-    detailContent.innerHTML = `
-        <div class="detail-mobile-header">
-            <button class="detail-back" type="button" data-detail-action="close"><i class="fas fa-chevron-left"></i> Library</button>
-            <button class="icon-btn" type="button" data-detail-action="edit" aria-label="Edit ${escapeHtml(prompt.title)}"><i class="fas fa-pen"></i></button>
-        </div>
-        <div class="detail-kicker">
-            <span class="detail-category">${escapeHtml(category)}</span>
-            <button class="tool-btn pin-btn${prompt.pinned ? ' pinned' : ''}" type="button" data-detail-action="pin" aria-label="${prompt.pinned ? 'Unpin' : 'Pin'} ${escapeHtml(prompt.title)}" aria-pressed="${prompt.pinned ? 'true' : 'false'}"><i class="${prompt.pinned ? 'fas' : 'far'} fa-star"></i></button>
-        </div>
-        <h2 class="detail-title">${escapeHtml(prompt.title)}</h2>
-        ${tags ? `<div class="detail-tags">${tags}</div>` : ''}
-        <div class="detail-meta">
-            <span><i class="far fa-clock"></i> Updated ${escapeHtml(updated)}</span>
-            <span><i class="far fa-calendar"></i> Created ${escapeHtml(created)}</span>
-            <span class="item-counts"><i class="fas fa-text-width"></i> ${escapeHtml(counts)}</span>
-        </div>
-        <p class="detail-prompt-label">Prompt</p>
-        <div class="detail-prompt">${escapeHtml(prompt.text)}</div>
-        ${prompt.notes ? `<div class="detail-notes"><p class="detail-notes-label">Notes</p>${escapeHtml(prompt.notes)}</div>` : ''}
-        <div class="detail-actions">
-            <button class="btn" type="button" data-detail-action="copy"><i class="fas fa-copy"></i> Copy prompt</button>
-            <button class="icon-btn" type="button" data-detail-action="edit" aria-label="Edit prompt"><i class="fas fa-pen"></i></button>
-            <button class="icon-btn danger" type="button" data-detail-action="delete" aria-label="Delete prompt"><i class="fas fa-trash"></i></button>
-        </div>`;
-}
-
-window.openPromptDetail = function(id) {
-    if (!appData.prompts.some(prompt => prompt.id === id)) return;
-    selectedPromptId = id;
-    promptsContainer.querySelectorAll('.prompt-item').forEach(item => {
-        item.classList.toggle('is-selected', Number(item.dataset.id) === id);
+  function openPromptDetail(id) {
+    if (!Cloud.getPrompts().some(p => p.id === id)) return;
+    state.selectedPromptId = id;
+    el.promptsContainer.querySelectorAll('.prompt-item').forEach(item => {
+      item.classList.toggle('is-selected', Number(item.dataset.id) === id);
     });
     renderDetail();
-    detailPanel.classList.add('is-open');
-    detailPanel.scrollTop = 0;
-};
+    el.detailPanel.classList.add('is-open');
+    el.detailPanel.scrollTop = 0;
+  }
 
-window.closePromptDetail = function() {
-    detailPanel.classList.remove('is-open');
-};
+  function closePromptDetail() {
+    el.detailPanel.classList.remove('is-open');
+  }
 
-// ---- View switching ----
-window.setView = function(view) {
-    if (view === currentView) return;
-    currentView = view;
-    localStorage.setItem('promptManagerView', view);
-    // Fresh view: large implies everything expanded; list/compact start collapsed.
-    expandedIds = new Set();
-    updateViewButtons();
-    renderPrompts();
-};
+  // ─────────────────────────────────────────────
+  // CATEGORIES
+  // ─────────────────────────────────────────────
 
-function updateViewButtons() {
-    document.querySelectorAll('.view-btn').forEach(btn => {
-        btn.classList.remove('active');
-        btn.setAttribute('aria-pressed', 'false');
+  function populateCategories() {
+    const list = sectionPrompts();
+    const categories = [...new Set(list.map(p => p.category).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+
+    el.categoryList.innerHTML = '';
+    [...new Set(Cloud.getPrompts().map(p => p.category).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b))
+      .forEach(c => {
+        const option = document.createElement('option');
+        option.value = c;
+        el.categoryList.appendChild(option);
+      });
+
+    const current = el.categoryFilter.value;
+    el.categoryFilter.innerHTML = '<option value="">All categories</option>';
+    categories.forEach(c => {
+      const option = document.createElement('option');
+      option.value = c;
+      option.textContent = c;
+      el.categoryFilter.appendChild(option);
     });
-    const map = { large: 'view-large', list: 'view-list', compact: 'view-compact' };
-    const activeBtn = document.getElementById(map[currentView]);
-    if (activeBtn) {
-        activeBtn.classList.add('active');
-        activeBtn.setAttribute('aria-pressed', 'true');
-    }
-}
+    el.categoryFilter.value = categories.includes(current) ? current : '';
 
-// ---- Expand / collapse (targeted DOM toggle — no re-render) ----
-// A pinned prompt renders twice (Pinned section + its home category), so this
-// updates EVERY instance of the id, with `expandedIds` as the source of truth.
-window.toggleExpand = function(id) {
-    const items = promptsContainer.querySelectorAll('.prompt-item[data-id="' + id + '"]');
-    if (!items.length) return;
-    const nowExpanded = !expandedIds.has(id);
-    if (nowExpanded) expandedIds.add(id);
-    else expandedIds.delete(id);
-    items.forEach(item => {
-        item.classList.toggle('is-expanded', nowExpanded);
-        const btn = item.querySelector('.preview-toggle');
-        if (btn) {
-            btn.innerHTML = nowExpanded
-                ? '<i class="fas fa-chevron-up"></i> Show less'
-                : '<i class="fas fa-chevron-down"></i> Show more';
-        }
+    el.sidebarCategories.innerHTML = '';
+    categories.forEach(category => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'nav-item' + (state.category === category ? ' active' : '');
+      button.dataset.category = category;
+      button.innerHTML = '<span><i class="fas fa-folder"></i><span class="nav-category-name"></span></span><span class="nav-count"></span>';
+      button.querySelector('.nav-category-name').textContent = category;
+      button.querySelector('.nav-count').textContent = list.filter(p => p.category === category).length;
+      el.sidebarCategories.appendChild(button);
     });
-};
+  }
 
-// ---- Pin / unpin ----
-// The flag is stored on the prompt object itself, so it round-trips through
-// saveLocalData() -> Supabase and follows the user across devices.
-window.togglePin = function(id) {
-    const prompt = appData.prompts.find(p => p.id === id);
+  // ─────────────────────────────────────────────
+  // PROMPT ACTIONS
+  // ─────────────────────────────────────────────
+
+  function scratchExpiry() {
+    const days = Cloud.getSettings().scratchRetentionDays;
+    return days === null ? null : Date.now() + days * 86400000;
+  }
+
+  function savePrompt(prompt) {
+    Cloud.upsertPromptLocal(prompt);
+    Cloud.savePrompts([prompt]);
+  }
+
+  function togglePin(id) {
+    const prompt = Cloud.getPrompts().find(p => p.id === id);
     if (!prompt) return;
     prompt.pinned = !prompt.pinned;
     prompt.updatedAt = Date.now();
-    saveLocalData([prompt]);
-    renderPrompts();
-    showToast(prompt.pinned ? "Pinned to top." : "Unpinned.");
-};
+    savePrompt(prompt);
+    render();
+    showToast(prompt.pinned ? 'Pinned to top.' : 'Unpinned.');
+  }
 
-// ---------------------------------------------------------------------------
-// Pointer-based drag reordering
-//
-// Uses Pointer Events instead of the HTML5 drag API, because HTML5 drag does
-// not fire on touchscreens. `touch-action: none` on the handle stops the page
-// from scrolling mid-drag, and implicit pointer capture (touch) plus an
-// explicit setPointerCapture (mouse) keep move events flowing to us while the
-// dragged item is set to pointer-events:none so elementFromPoint can see what
-// is underneath the finger/cursor.
-// ---------------------------------------------------------------------------
-let dragState = null;
+  function copyPrompt(id) {
+    const prompt = Cloud.getPrompts().find(p => p.id === id);
+    if (prompt) copyText(prompt.text, 'Prompt copied.');
+  }
 
-function startPointerDrag(e, item, id, category) {
-    if (e.pointerType === 'mouse' && e.button !== 0) return; // left button only
-    e.preventDefault();
-    dragState = { item, id, category, container: item.parentElement, pointerId: e.pointerId };
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) { /* older browsers */ }
+  function deletePrompt(id) {
+    const prompt = Cloud.getPrompts().find(p => p.id === id);
+    if (!prompt) return;
+    confirmAction({
+      title: `Delete “${prompt.title}”?`,
+      description: 'This removes the prompt from every synced device. It cannot be undone.',
+      confirmLabel: 'Delete prompt',
+      onConfirm: () => {
+        Cloud.removePromptLocal(id);
+        Cloud.savePrompts([], [{ id, deletedAt: Date.now(), revision: prompt.revision || 0 }]);
+        state.expandedIds.delete(id);
+        if (state.selectedPromptId === id) {
+          state.selectedPromptId = null;
+          closePromptDetail();
+        }
+        render();
+        showToast('Prompt deleted.');
+      }
+    });
+  }
+
+  function movePromptToSection(id, section) {
+    const prompt = Cloud.getPrompts().find(p => p.id === id);
+    if (!prompt) return;
+    prompt.section = section;
+    prompt.expiresAt = section === 'scratch' ? scratchExpiry() : null;
+    prompt.updatedAt = Date.now();
+    savePrompt(prompt);
+    render();
+    showToast(`Moved to ${SECTION_META[section].title}.`);
+  }
+
+  function openPromptEditor(id, sectionHint) {
+    el.promptForm.reset();
+    if (id) {
+      const prompt = Cloud.getPrompts().find(p => p.id === id);
+      if (!prompt) return;
+      editState = { editing: true, id };
+      el.promptDialogTitle.textContent = 'Edit prompt';
+      el.promptTitle.value = prompt.title;
+      el.promptSection.value = prompt.section;
+      el.promptCategory.value = prompt.category || '';
+      el.promptTags.value = (prompt.tags || []).join(', ');
+      el.promptText.value = prompt.text;
+      el.promptNotes.value = prompt.notes || '';
+    } else {
+      editState = { editing: false, id: null };
+      el.promptDialogTitle.textContent = 'Add new prompt';
+      const fallback = state.section === 'history' ? 'library' : state.section;
+      el.promptSection.value = sectionHint || fallback;
+    }
+    updateEditorMeta();
+    openDialog(el.promptDialog, el.promptTitle);
+  }
+
+  function updateEditorMeta() {
+    el.editorCount.textContent = `${el.promptText.value.length.toLocaleString()} characters`;
+    el.workshopHint.hidden = el.promptSection.value !== 'workshop';
+  }
+
+  el.promptText.addEventListener('input', updateEditorMeta);
+  el.promptSection.addEventListener('change', updateEditorMeta);
+
+  el.promptForm.addEventListener('submit', event => {
+    event.preventDefault();
+    const section = Cloud.safeSection(el.promptSection.value);
+    const data = {
+      title: el.promptTitle.value.trim(),
+      category: el.promptCategory.value.trim(),
+      tags: el.promptTags.value.split(',').map(t => t.trim()).filter(Boolean),
+      text: el.promptText.value.trim(),
+      notes: el.promptNotes.value.trim(),
+      section,
+      updatedAt: Date.now()
+    };
+
+    let saved;
+    if (editState.editing) {
+      const existing = Cloud.getPrompts().find(p => p.id === editState.id);
+      if (!existing) return;
+      saved = { ...existing, ...data };
+      // Entering Scratch starts the clock; leaving it clears the clock.
+      if (section === 'scratch' && !existing.expiresAt) saved.expiresAt = scratchExpiry();
+      if (section !== 'scratch') saved.expiresAt = null;
+    } else {
+      const id = Cloud.newId();
+      saved = {
+        ...data,
+        id,
+        createdAt: id,
+        order: id,
+        pinned: false,
+        revision: 0,
+        expiresAt: section === 'scratch' ? scratchExpiry() : null,
+        runConfig: null
+      };
+    }
+
+    savePrompt(saved);
+    state.selectedPromptId = saved.id;
+    closeDialog(el.promptDialog);
+
+    if (saved.section !== state.section && SECTION_META[saved.section]) setSection(saved.section);
+    else render();
+
+    if (!isDesktop()) openPromptDetail(saved.id);
+  });
+
+  // ─────────────────────────────────────────────
+  // REORDER
+  // ─────────────────────────────────────────────
+
+  /* Pointer Events rather than the HTML5 drag API, because HTML5
+     drag does not fire on touchscreens. touch-action:none on the
+     handle stops the page scrolling mid-drag. */
+  let dragState = null;
+
+  function startDrag(event, item, id, category) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    dragState = { item, id, category, container: item.parentElement, pointerId: event.pointerId };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch (e) { /* older browsers */ }
     item.classList.add('dragging');
     document.body.classList.add('is-dragging');
-    document.addEventListener('pointermove', onPointerDragMove);
-    document.addEventListener('pointerup', endPointerDrag);
-    document.addEventListener('pointercancel', endPointerDrag);
-}
+    document.addEventListener('pointermove', onDragMove);
+    document.addEventListener('pointerup', endDrag);
+    document.addEventListener('pointercancel', endDrag);
+  }
 
-function onPointerDragMove(e) {
+  function onDragMove(event) {
     if (!dragState) return;
-    e.preventDefault();
-    const below = document.elementFromPoint(e.clientX, e.clientY);
+    event.preventDefault();
+    const below = document.elementFromPoint(event.clientX, event.clientY);
     if (!below) return;
     const target = below.closest('.prompt-item');
     if (!target || target === dragState.item) return;
-    if (target.parentElement !== dragState.container) return;      // same category grid only
+    if (target.parentElement !== dragState.container) return;
     if (target.dataset.category !== String(dragState.category)) return;
     const rect = target.getBoundingClientRect();
-    const before = (e.clientY - rect.top) < rect.height / 2;
+    const before = (event.clientY - rect.top) < rect.height / 2;
     dragState.container.insertBefore(dragState.item, before ? target : target.nextSibling);
-}
+  }
 
-function endPointerDrag() {
+  function endDrag() {
     if (!dragState) return;
     const { item, container, category } = dragState;
     item.classList.remove('dragging');
     document.body.classList.remove('is-dragging');
-    document.removeEventListener('pointermove', onPointerDragMove);
-    document.removeEventListener('pointerup', endPointerDrag);
-    document.removeEventListener('pointercancel', endPointerDrag);
-    const orderedIds = Array.from(container.querySelectorAll('.prompt-item')).map(n => Number(n.dataset.id));
+    document.removeEventListener('pointermove', onDragMove);
+    document.removeEventListener('pointerup', endDrag);
+    document.removeEventListener('pointercancel', endDrag);
+    const ordered = Array.from(container.querySelectorAll('.prompt-item')).map(n => Number(n.dataset.id));
     dragState = null;
-    commitOrder(category, orderedIds);
-}
+    commitOrder(category, ordered);
+  }
 
-// Persists only rows whose order actually changed, then re-renders to refresh
-// arrow states. Row-level cloud sync avoids rewriting unrelated prompts.
-function commitOrder(category, orderedIds) {
+  // Persists only rows whose order actually changed, so reordering
+  // one category never rewrites unrelated prompts.
+  function commitOrder(category, orderedIds) {
     const indexById = new Map(orderedIds.map((id, i) => [id, i]));
     const changedAt = Date.now();
-    const changedPrompts = [];
-    appData.prompts.forEach(p => {
-        if ((p.category || 'Uncategorized') === category && indexById.has(p.id)) {
-            const nextOrder = indexById.get(p.id);
-            if (p.order !== nextOrder) {
-                p.order = nextOrder;
-                p.updatedAt = changedAt;
-                changedPrompts.push(p);
-            }
+    const changed = [];
+    sectionPrompts().forEach(p => {
+      if ((p.category || 'Uncategorized') === category && indexById.has(p.id)) {
+        const next = indexById.get(p.id);
+        if (p.order !== next) {
+          p.order = next;
+          p.updatedAt = changedAt;
+          changed.push(p);
         }
+      }
     });
-    if (changedPrompts.length) saveLocalData(changedPrompts);
-    renderPrompts();
-}
+    if (changed.length) Cloud.savePrompts(changed);
+    render();
+  }
 
-// Arrow-button reordering: reliable, accessible alternative to dragging.
-window.movePrompt = function(id, direction) {
-    const prompt = appData.prompts.find(p => p.id === id);
+  function movePrompt(id, direction) {
+    const prompt = Cloud.getPrompts().find(p => p.id === id);
     if (!prompt) return;
     const category = prompt.category || 'Uncategorized';
-    const catPrompts = appData.prompts.filter(p => (p.category || 'Uncategorized') === category);
-    catPrompts.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const list = sectionPrompts()
+      .filter(p => (p.category || 'Uncategorized') === category)
+      .sort((a, b) => (a.order || 0) - (b.order || 0));
+    const index = list.findIndex(p => p.id === id);
+    const swap = index + direction;
+    if (swap < 0 || swap >= list.length) return;
 
-    const idx = catPrompts.findIndex(p => p.id === id);
-    const swapIdx = idx + direction;
-    if (swapIdx < 0 || swapIdx >= catPrompts.length) return;
-
-    const tmp = catPrompts[idx].order;
-    catPrompts[idx].order = catPrompts[swapIdx].order;
-    catPrompts[swapIdx].order = tmp;
+    const tmp = list[index].order;
+    list[index].order = list[swap].order;
+    list[swap].order = tmp;
     const changedAt = Date.now();
-    catPrompts[idx].updatedAt = changedAt;
-    catPrompts[swapIdx].updatedAt = changedAt;
+    list[index].updatedAt = changedAt;
+    list[swap].updatedAt = changedAt;
+    Cloud.savePrompts([list[index], list[swap]]);
+    render();
+  }
 
-    saveLocalData([catPrompts[idx], catPrompts[swapIdx]]);
-    renderPrompts();
-};
+  // ─────────────────────────────────────────────
+  // WORKSHOP
+  // ─────────────────────────────────────────────
 
+  function metaPrompts() {
+    return Cloud.getPrompts()
+      .filter(p => p.section === 'workshop')
+      .sort((a, b) => a.title.localeCompare(b.title));
+  }
 
-// Actions
-function openModal(modal, preferredFocus) {
-    if (!modal) return;
-    lastFocusedElement = document.activeElement;
-    modal.classList.add('active');
-    requestAnimationFrame(() => {
-        const target = preferredFocus || modal.querySelector('input, textarea, button, select');
-        target?.focus();
+  function renderWorkshop() {
+    const list = metaPrompts();
+    el.viewTitle.textContent = 'Workshop';
+    el.resultCount.textContent = list.length;
+
+    if (state.metaPromptId && !list.some(p => p.id === state.metaPromptId)) {
+      state.metaPromptId = null;
+    }
+    if (!state.metaPromptId && list.length) state.metaPromptId = list[0].id;
+
+    el.workshopList.innerHTML = '';
+    if (!list.length) {
+      el.workshopList.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon"><i class="fas fa-screwdriver-wrench"></i></div>
+          <h2>No meta-prompts yet</h2>
+          <p>A meta-prompt is the prompt that writes your prompts. Create one to start running.</p>
+          <button class="btn" type="button" data-open-prompt data-section-hint="workshop"><i class="fas fa-plus"></i> New meta-prompt</button>
+        </div>`;
+    } else {
+      list.forEach(p => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'workshop-item' + (p.id === state.metaPromptId ? ' is-selected' : '');
+        button.dataset.metaId = p.id;
+        const title = document.createElement('strong');
+        title.textContent = p.title;
+        const sub = document.createElement('span');
+        sub.textContent = p.text.replace(/\s+/g, ' ').slice(0, 90);
+        button.appendChild(title);
+        button.appendChild(sub);
+        el.workshopList.appendChild(button);
+      });
+    }
+
+    const selected = list.find(p => p.id === state.metaPromptId);
+    el.workshopSelectedName.textContent = selected ? selected.title : 'No meta-prompt selected';
+
+    const creds = Settings.readCredentials();
+    const providerMeta = Settings.PROVIDERS[creds.provider];
+    const model = Settings.resolveModel(creds.provider, creds);
+    const hasKey = Boolean(creds.keys[creds.provider]);
+    el.workshopModelLabel.textContent = hasKey
+      ? `${providerMeta.label} · ${model}`
+      : `${providerMeta.label} · no API key`;
+    el.workshopRunBtn.disabled = !selected || !hasKey || state.running;
+  }
+
+  function setRunning(running) {
+    state.running = running;
+    el.workshopRunBtn.hidden = running;
+    el.workshopStopBtn.hidden = !running;
+    el.workshopInput.disabled = running;
+    el.workshopRunBtn.disabled = running;
+  }
+
+  async function runWorkshop() {
+    const meta = Cloud.getPrompts().find(p => p.id === state.metaPromptId);
+    if (!meta) { showToast('Pick a meta-prompt first.'); return; }
+    const input = el.workshopInput.value;
+
+    const creds = Settings.readCredentials();
+    if (!creds.keys[creds.provider]) {
+      showToast('Add an API key in Settings first.');
+      openSettings();
+      return;
+    }
+
+    state.lastRun = null;
+    el.workshopOutput.textContent = '';
+    el.workshopOutput.classList.add('is-streaming');
+    el.workshopOutputActions.hidden = true;
+    el.workshopReceipt.textContent = 'Running…';
+    if (isPhone()) el.workshopOutputPane.classList.add('is-open');
+    setRunning(true);
+
+    state.abortController = new AbortController();
+    const startedAt = Date.now();
+    let receipt = null;
+    let failure = null;
+
+    try {
+      receipt = await Runner.run({
+        metaPromptText: meta.text,
+        input,
+        maxTokens: Cloud.getSettings().defaultMaxTokens,
+        signal: state.abortController.signal,
+        onDelta: chunk => {
+          el.workshopOutput.textContent += chunk;
+          el.workshopOutput.scrollTop = el.workshopOutput.scrollHeight;
+        }
+      });
+    } catch (error) {
+      failure = error;
+    } finally {
+      setRunning(false);
+      state.abortController = null;
+      el.workshopOutput.classList.remove('is-streaming');
+    }
+
+    const aborted = failure && failure.name === 'AbortError';
+
+    if (failure && !aborted) {
+      el.workshopOutput.textContent = '';
+      const box = document.createElement('div');
+      box.className = 'run-error';
+      const strong = document.createElement('strong');
+      strong.textContent = failure.message || 'The run failed.';
+      box.appendChild(strong);
+      if (failure.hint) {
+        const span = document.createElement('span');
+        span.textContent = failure.hint;
+        box.appendChild(span);
+      }
+      el.workshopOutput.appendChild(box);
+      el.workshopReceipt.textContent = 'Failed';
+    }
+
+    if (aborted) {
+      el.workshopReceipt.textContent = 'Stopped';
+      showToast('Run stopped.');
+    }
+
+    // A history row is written for success AND failure. A run that
+    // errored is exactly the one you want to find later.
+    if (!aborted) {
+      const creds2 = Settings.readCredentials();
+      const record = {
+        id: Cloud.newId(),
+        metaPromptId: meta.id,
+        metaPromptTitle: meta.title,
+        provider: receipt ? receipt.provider : creds2.provider,
+        requestedModel: receipt ? receipt.requestedModel : Settings.resolveModel(creds2.provider, creds2),
+        servedModel: receipt ? receipt.servedModel : '',
+        responseId: receipt ? receipt.responseId : '',
+        promptVersion: receipt ? receipt.promptVersion : Runner.PROMPT_VERSION,
+        input,
+        output: receipt ? receipt.text : '',
+        status: receipt ? 'ok' : 'error',
+        errorMessage: failure ? String(failure.message || '') : '',
+        inputTokens: receipt ? receipt.inputTokens : 0,
+        outputTokens: receipt ? receipt.outputTokens : 0,
+        costUsd: receipt ? receipt.costUsd : 0,
+        durationMs: receipt ? receipt.durationMs : Date.now() - startedAt,
+        keep: false,
+        savedPromptId: null,
+        createdAt: Date.now()
+      };
+
+      try {
+        state.lastRun = await Cloud.saveRun(record);
+      } catch (error) {
+        console.error('[ui] could not record the run', error);
+        state.lastRun = record;
+        showToast('The run finished but could not be saved to History.');
+      }
+    }
+
+    if (receipt) {
+      const swapped = receipt.servedModel && receipt.servedModel !== receipt.requestedModel;
+      el.workshopReceipt.textContent = [
+        receipt.servedModel || receipt.requestedModel,
+        `${receipt.inputTokens.toLocaleString()}→${receipt.outputTokens.toLocaleString()} tok`,
+        receipt.priced ? formatCost(receipt.costUsd) : 'unpriced',
+        `${(receipt.durationMs / 1000).toFixed(1)}s`
+      ].join(' · ') + (swapped ? ' (swapped)' : '');
+      el.workshopOutputActions.hidden = false;
+    }
+
+    render();
+  }
+
+  function saveRunOutput(section) {
+    if (!state.lastRun || !state.lastRun.output) return;
+    const meta = Cloud.getPrompts().find(p => p.id === state.lastRun.metaPromptId);
+    const id = Cloud.newId();
+    const prompt = {
+      id,
+      title: `${meta ? meta.title : 'Run'} — ${formatDate(Date.now())}`,
+      text: state.lastRun.output,
+      category: '',
+      tags: [],
+      notes: `From a ${state.lastRun.servedModel || state.lastRun.requestedModel} run.`,
+      pinned: false,
+      section,
+      createdAt: id,
+      updatedAt: id,
+      order: id,
+      revision: 0,
+      expiresAt: section === 'scratch' ? scratchExpiry() : null,
+      runConfig: null
+    };
+    savePrompt(prompt);
+
+    // Linking the run to the saved prompt also exempts it from the
+    // retention sweep — you kept the output, so the receipt stays.
+    Cloud.updateRun(state.lastRun.id, { savedPromptId: id })
+      .catch(error => console.error('[ui] could not link run to prompt', error));
+
+    showToast(`Saved to ${SECTION_META[section].title}.`);
+    render();
+  }
+
+  // ─────────────────────────────────────────────
+  // HISTORY
+  // ─────────────────────────────────────────────
+
+  function filteredRuns() {
+    const now = Date.now();
+    return Cloud.getRuns().filter(run => {
+      if (state.historyRange !== 'all') {
+        const days = Number(state.historyRange);
+        if (run.createdAt < now - days * 86400000) return false;
+      }
+      if (state.historyProvider && run.provider !== state.historyProvider) return false;
+      if (state.historyStatus && run.status !== state.historyStatus) return false;
+      if (state.historyUnsavedOnly && run.savedPromptId) return false;
+      return true;
     });
-}
+  }
 
-function closeModal(modal) {
-    if (!modal) return;
-    modal.classList.remove('active');
-    if (modal === deleteModal) pendingDeleteId = null;
-    if (lastFocusedElement instanceof HTMLElement) lastFocusedElement.focus();
-    lastFocusedElement = null;
-}
+  function renderHistory() {
+    const list = filteredRuns();
+    el.viewTitle.textContent = 'History';
+    el.resultCount.textContent = list.length;
 
-function openNewPromptEditor() {
-    promptForm.reset();
-    editorCount.textContent = '0 characters';
-    editState = { isEditing: false, id: null };
-    promptModalTitle.textContent = 'Add new prompt';
-    openModal(promptModal, promptTitle);
-}
+    const providers = [...new Set(Cloud.getRuns().map(r => r.provider).filter(Boolean))].sort();
+    const currentProvider = el.historyProvider.value;
+    el.historyProvider.innerHTML = '<option value="">All providers</option>';
+    providers.forEach(p => {
+      const option = document.createElement('option');
+      option.value = p;
+      option.textContent = (Settings.PROVIDERS[p] && Settings.PROVIDERS[p].label) || p;
+      el.historyProvider.appendChild(option);
+    });
+    el.historyProvider.value = providers.includes(currentProvider) ? currentProvider : '';
 
-window.copyPrompt = function(id) {
-    const prompt = appData.prompts.find(p => p.id === id);
-    if (prompt) {
-        navigator.clipboard.writeText(prompt.text).then(() => {
-            showToast("Copied to clipboard!");
-        }).catch(() => showToast('Unable to copy. Select the prompt text and copy it manually.'));
+    el.historySelectionBar.hidden = !state.selectMode;
+    el.historyList.innerHTML = '';
+
+    if (!list.length) {
+      el.historyList.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-state-icon"><i class="fas fa-clock-rotate-left"></i></div>
+          <h2>${Cloud.getRuns().length ? 'No runs match these filters' : 'No runs yet'}</h2>
+          <p>${Cloud.getRuns().length ? 'Try widening the date range or clearing a filter.' : 'Every run you make in the Workshop is recorded here — including the ones that fail.'}</p>
+        </div>`;
+      updateSelectionCount();
+      return;
     }
-}
 
-window.deletePrompt = function(id) {
-    const prompt = appData.prompts.find(p => p.id === id);
-    if (!prompt) return;
-    pendingDeleteId = id;
-    deleteModal.querySelector('#delete-title').textContent = `Delete “${prompt.title}”?`;
-    openModal(deleteModal, cancelDeleteBtn);
-}
+    list.forEach(run => el.historyList.appendChild(createHistoryRow(run)));
+    updateSelectionCount();
+  }
 
-function performDelete() {
-    const id = pendingDeleteId;
-    const prompt = appData.prompts.find(p => p.id === id);
-    if (!prompt) return closeModal(deleteModal);
-    const deletedAt = Date.now();
-    appData.prompts = appData.prompts.filter(p => p.id !== id);
-    expandedIds.delete(id);
-    if (selectedPromptId === id) {
-        selectedPromptId = null;
-        window.closePromptDetail();
+  function createHistoryRow(run) {
+    const row = document.createElement('div');
+    row.className = 'history-row' + (state.selectedRunIds.has(run.id) ? ' is-selected' : '');
+    row.dataset.runId = run.id;
+
+    const parts = [];
+    if (state.selectMode) {
+      parts.push(`<input type="checkbox" data-run-select="${run.id}" ${state.selectedRunIds.has(run.id) ? 'checked' : ''} aria-label="Select run">`);
     }
-    closeModal(deleteModal);
-    saveLocalData([], [{ id, deletedAt, revision: prompt.revision || 0 }]);
-    renderPrompts();
-    showToast('Prompt deleted.');
-}
 
-window.editPrompt = function(id) {
-    const prompt = appData.prompts.find(p => p.id === id);
-    if (!prompt) return;
+    const snippet = (run.status === 'error' ? run.errorMessage : run.output) || run.input || '';
+    const model = run.servedModel || run.requestedModel || '—';
+    const swapped = run.servedModel && run.requestedModel && run.servedModel !== run.requestedModel;
 
-    promptTitle.value = prompt.title;
-    promptCategory.value = prompt.category || '';
-    promptTags.value = prompt.tags ? prompt.tags.join(', ') : '';
-    promptText.value = prompt.text;
-    promptNotes.value = prompt.notes || '';
-    editorCount.textContent = `${prompt.text.length.toLocaleString()} characters`;
+    parts.push(`
+      <button class="history-main" type="button" data-run-open="${run.id}">
+        <span class="history-title">
+          <strong>${escapeHtml(run.metaPromptTitle || 'Run')}</strong>
+          <span class="history-badge ${run.status === 'error' ? 'error' : 'ok'}">${run.status === 'error' ? 'Failed' : 'OK'}</span>
+          ${run.keep ? '<span class="history-badge keep">Keep</span>' : ''}
+          ${run.savedPromptId ? '<span class="history-badge">Saved</span>' : ''}
+        </span>
+        <span class="history-snippet">${escapeHtml(snippet.replace(/\s+/g, ' ').slice(0, 220))}</span>
+        <span class="history-meta">
+          <span>${escapeHtml(formatDateTime(run.createdAt))}</span>
+          <span>${escapeHtml(model)}${swapped ? ' (swapped)' : ''}</span>
+          <span>${run.inputTokens.toLocaleString()}→${run.outputTokens.toLocaleString()} tok</span>
+          <span>${escapeHtml(formatCost(run.costUsd))}</span>
+          <span>${(run.durationMs / 1000).toFixed(1)}s</span>
+        </span>
+      </button>
+      <div class="history-actions">
+        <button class="tool-btn${run.keep ? ' pinned' : ''}" data-run-keep="${run.id}" title="${run.keep ? 'Stop keeping' : 'Keep — never auto-delete'}" aria-pressed="${run.keep ? 'true' : 'false'}"><i class="${run.keep ? 'fas' : 'far'} fa-bookmark"></i></button>
+        <button class="tool-btn danger" data-run-delete="${run.id}" title="Delete run"><i class="fas fa-trash"></i></button>
+      </div>`);
 
-    editState = { isEditing: true, id: id };
-    promptModalTitle.textContent = "Edit prompt";
-    openModal(promptModal, promptTitle);
-}
+    row.innerHTML = parts.join('');
+    return row;
+  }
 
-// Event Listeners
-document.querySelectorAll('.view-btn[data-view]').forEach(button => {
-    button.addEventListener('click', () => window.setView(button.dataset.view));
-});
+  function updateSelectionCount() {
+    const visible = filteredRuns();
+    const selectedVisible = visible.filter(r => state.selectedRunIds.has(r.id));
+    el.historySelectionCount.textContent = `${selectedVisible.length} selected`;
+    el.historyDeleteBtn.disabled = selectedVisible.length === 0;
+    el.historySelectAll.checked = visible.length > 0 && selectedVisible.length === visible.length;
+  }
 
-promptsContainer.addEventListener('click', event => {
+  function requestRunDeletion(ids) {
+    const runs = Cloud.getRuns().filter(r => ids.includes(r.id));
+    const keepers = runs.filter(r => r.keep);
+    const deletable = runs.filter(r => !r.keep).map(r => r.id);
+
+    if (!deletable.length) {
+      showToast('Every selected run is marked Keep. Nothing to delete.');
+      return;
+    }
+
+    // The confirm states exactly what goes and what stays.
+    const description = keepers.length
+      ? `${deletable.length} ${deletable.length === 1 ? 'run' : 'runs'} will be deleted. ${keepers.length} marked Keep will remain.`
+      : `This permanently deletes ${deletable.length} ${deletable.length === 1 ? 'run' : 'runs'}.`;
+
+    confirmAction({
+      title: `Delete ${deletable.length} ${deletable.length === 1 ? 'run' : 'runs'}?`,
+      description,
+      confirmLabel: `Delete ${deletable.length}`,
+      onConfirm: () => scheduleRunDeletion(deletable)
+    });
+  }
+
+  /* Hard delete, with a 5-second undo. The rows are hidden
+     immediately and the DELETE is held for the length of the toast,
+     so Undo is instant and a tab closed mid-window leaves the runs
+     intact — the safe direction to fail in. */
+  function scheduleRunDeletion(ids) {
+    if (state.pendingRunDelete) {
+      clearTimeout(state.pendingRunDelete.timer);
+      commitRunDeletion();
+    }
+
+    const hidden = new Set(ids);
+    state.pendingRunDelete = { ids, hidden };
+    ids.forEach(id => state.selectedRunIds.delete(id));
+
+    const rows = el.historyList.querySelectorAll('[data-run-id]');
+    rows.forEach(row => {
+      if (hidden.has(Number(row.dataset.runId))) row.hidden = true;
+    });
+    updateSelectionCount();
+
+    state.pendingRunDelete.timer = setTimeout(commitRunDeletion, 5000);
+    showToast(`${ids.length} ${ids.length === 1 ? 'run' : 'runs'} deleted.`, 'Undo', () => {
+      clearTimeout(state.pendingRunDelete.timer);
+      state.pendingRunDelete = null;
+      renderHistory();
+      showToast('Restored.');
+    });
+  }
+
+  function commitRunDeletion() {
+    const pending = state.pendingRunDelete;
+    if (!pending) return;
+    state.pendingRunDelete = null;
+    Cloud.deleteRuns(pending.ids)
+      .then(() => render())
+      .catch(error => {
+        console.error('[ui] run delete failed', error);
+        showToast('Could not delete those runs. They are still here.');
+        render();
+      });
+  }
+
+  function openRunDetail(id) {
+    const run = Cloud.getRuns().find(r => r.id === id);
+    if (!run) return;
+    el.runDialogTitle.textContent = run.metaPromptTitle || 'Run';
+
+    const swapped = run.servedModel && run.requestedModel && run.servedModel !== run.requestedModel;
+    const cell = (label, value, extraClass) =>
+      `<div class="receipt-cell${extraClass ? ' ' + extraClass : ''}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+
+    el.runDetailBody.innerHTML = `
+      <div class="run-detail-block">
+        <h3>Receipt</h3>
+        <div class="receipt-grid">
+          ${cell('When', formatDateTime(run.createdAt))}
+          ${cell('Provider', (Settings.PROVIDERS[run.provider] && Settings.PROVIDERS[run.provider].label) || run.provider)}
+          ${cell('Model requested', run.requestedModel || '—')}
+          ${cell('Model served', run.servedModel || '—', swapped ? 'is-swapped' : '')}
+          ${cell('Tokens', `${run.inputTokens.toLocaleString()} in / ${run.outputTokens.toLocaleString()} out`)}
+          ${cell('Cost', formatCost(run.costUsd))}
+          ${cell('Duration', `${(run.durationMs / 1000).toFixed(1)}s`)}
+          ${cell('Status', run.status === 'error' ? 'Failed' : 'OK')}
+          ${cell('Prompt version', run.promptVersion || '—')}
+          ${run.responseId ? cell('Response id', run.responseId) : ''}
+        </div>
+      </div>
+      ${run.status === 'error' ? `<div class="run-detail-block"><h3>Error</h3><pre>${escapeHtml(run.errorMessage)}</pre></div>` : ''}
+      <div class="run-detail-block"><h3>Input</h3><pre>${escapeHtml(run.input || '(empty)')}</pre></div>
+      ${run.output ? `<div class="run-detail-block"><h3>Output</h3><pre>${escapeHtml(run.output)}</pre></div>` : ''}`;
+
+    el.runCopyInput.onclick = () => copyText(run.input, 'Input copied.');
+    el.runCopyOutput.onclick = () => copyText(run.output, 'Output copied.');
+    el.runCopyOutput.disabled = !run.output;
+    openDialog(el.runDialog, el.runCopyOutput);
+  }
+
+  // ─────────────────────────────────────────────
+  // SETTINGS
+  // ─────────────────────────────────────────────
+
+  function openSettings() {
+    const user = Cloud.getUser();
+    el.accountEmail.textContent = (user && user.email) || 'Unknown account';
+    renderSettings();
+    openDialog(el.settingsDialog);
+  }
+
+  function renderSettings() {
+    const creds = Settings.readCredentials();
+    const cloudSettings = Cloud.getSettings();
+
+    el.settingsProvider.innerHTML = '';
+    Settings.PROVIDER_IDS.forEach(id => {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = Settings.PROVIDERS[id].label;
+      el.settingsProvider.appendChild(option);
+    });
+    el.settingsProvider.value = creds.provider;
+    el.settingsEffort.value = creds.effort;
+    el.settingsMaxTokens.value = cloudSettings.defaultMaxTokens;
+    el.settingsScratchDays.value = cloudSettings.scratchRetentionDays === null
+      ? '' : String(cloudSettings.scratchRetentionDays);
+    el.settingsRunsDays.value = cloudSettings.runsRetentionDays === null
+      ? '' : String(cloudSettings.runsRetentionDays);
+
+    el.providerRows.innerHTML = '';
+    Settings.PROVIDER_IDS.forEach(id => {
+      const meta = Settings.PROVIDERS[id];
+      const row = document.createElement('div');
+      row.className = 'provider-row';
+      row.dataset.provider = id;
+      row.innerHTML = `
+        <div class="provider-row-head">
+          <strong>${escapeHtml(meta.label)}</strong>
+          <span class="provider-print">${escapeHtml(Settings.fingerprint(creds.keys[id]))}</span>
+          <button class="btn btn-secondary" type="button" data-test-provider="${id}">Test</button>
+        </div>
+        <div class="provider-row-fields">
+          <label class="sr-only" for="key-${id}">${escapeHtml(meta.label)} API key</label>
+          <input type="password" id="key-${id}" data-key-input="${id}" placeholder="${escapeHtml(meta.placeholder)}" autocomplete="off" spellcheck="false">
+          <label class="sr-only" for="model-${id}">${escapeHtml(meta.label)} model</label>
+          <select id="model-${id}" data-model-input="${id}"></select>
+        </div>
+        <p class="provider-test-note" data-test-note="${id}"></p>`;
+      el.providerRows.appendChild(row);
+
+      row.querySelector(`[data-key-input="${id}"]`).value = creds.keys[id];
+      populateModelSelect(id, creds);
+    });
+
+    updateSweepSummary();
+  }
+
+  function populateModelSelect(providerId, creds) {
+    const select = el.providerRows.querySelector(`[data-model-input="${providerId}"]`);
+    if (!select) return;
+    const meta = Settings.PROVIDERS[providerId];
+    const cached = Settings.readModelCatalog(providerId, creds.keys[providerId]);
+    const chosen = creds.models[providerId];
+
+    select.innerHTML = '';
+    const auto = document.createElement('option');
+    auto.value = '';
+    auto.textContent = `Default (${meta.defaultModel})`;
+    select.appendChild(auto);
+
+    const models = cached ? cached.models : [];
+    // A pinned model that the live list no longer contains still has
+    // to be selectable, or saving Settings would silently change it.
+    if (chosen && !models.includes(chosen)) models.unshift(chosen);
+    models.forEach(model => {
+      const option = document.createElement('option');
+      option.value = model;
+      option.textContent = model;
+      select.appendChild(option);
+    });
+    select.value = chosen;
+  }
+
+  function collectCredentials() {
+    const keys = {};
+    const models = {};
+    Settings.PROVIDER_IDS.forEach(id => {
+      const keyInput = el.providerRows.querySelector(`[data-key-input="${id}"]`);
+      const modelInput = el.providerRows.querySelector(`[data-model-input="${id}"]`);
+      if (keyInput) keys[id] = keyInput.value;
+      if (modelInput) models[id] = modelInput.value;
+    });
+    return Settings.writeCredentials({
+      provider: el.settingsProvider.value,
+      effort: el.settingsEffort.value,
+      keys,
+      models
+    });
+  }
+
+  function updateSweepSummary() {
+    const { expiredScratch, staleRuns } = Cloud.sweepCandidates();
+    const total = expiredScratch.length + staleRuns.length;
+    el.sweepSummary.textContent = total === 0
+      ? 'Nothing is due for cleanup.'
+      : `${expiredScratch.length} expired Scratch ${expiredScratch.length === 1 ? 'prompt' : 'prompts'} and ${staleRuns.length} old ${staleRuns.length === 1 ? 'run' : 'runs'} can be removed.`;
+    el.runSweepBtn.disabled = total === 0;
+  }
+
+  // ─────────────────────────────────────────────
+  // COMMAND PALETTE
+  // ─────────────────────────────────────────────
+
+  function openPalette() {
+    el.paletteInput.value = '';
+    buildPalette('');
+    openDialog(el.paletteDialog, el.paletteInput);
+  }
+
+  function buildPalette(query) {
+    const term = query.trim().toLowerCase();
+    const items = [];
+
+    Object.keys(SECTION_META).forEach(section => {
+      items.push({
+        icon: 'fa-arrow-right',
+        label: `Go to ${SECTION_META[section].title}`,
+        hint: 'Section',
+        run: () => setSection(section)
+      });
+    });
+
+    items.push({
+      icon: 'fa-plus', label: 'New prompt', hint: 'Action',
+      run: () => openPromptEditor(null)
+    });
+    items.push({
+      icon: 'fa-gear', label: 'Open settings', hint: 'Action',
+      run: () => openSettings()
+    });
+    items.push({
+      icon: 'fa-rotate', label: 'Sync now', hint: 'Action',
+      run: () => Cloud.syncFromCloud().then(ok => showToast(ok ? 'Cloud sync complete.' : 'Sync failed.'))
+    });
+
+    Cloud.getPrompts().forEach(prompt => {
+      items.push({
+        icon: 'fa-align-left',
+        label: prompt.title,
+        hint: SECTION_META[prompt.section].title,
+        run: () => {
+          setSection(prompt.section);
+          if (prompt.section === 'workshop') {
+            state.metaPromptId = prompt.id;
+            renderWorkshop();
+          } else {
+            openPromptDetail(prompt.id);
+          }
+        }
+      });
+    });
+
+    const matched = term
+      ? items.filter(item => item.label.toLowerCase().includes(term))
+      : items;
+
+    state.paletteItems = matched.slice(0, 40);
+    state.paletteIndex = 0;
+    renderPalette();
+  }
+
+  function renderPalette() {
+    el.paletteResults.innerHTML = '';
+    if (!state.paletteItems.length) {
+      el.paletteResults.innerHTML = '<p class="palette-empty">Nothing matches.</p>';
+      return;
+    }
+    state.paletteItems.forEach((item, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'palette-item' + (index === state.paletteIndex ? ' is-active' : '');
+      button.dataset.paletteIndex = index;
+      button.setAttribute('role', 'option');
+      const icon = document.createElement('i');
+      icon.className = `fas ${item.icon}`;
+      const label = document.createElement('span');
+      label.textContent = item.label;
+      const hint = document.createElement('small');
+      hint.textContent = item.hint;
+      button.appendChild(icon);
+      button.appendChild(label);
+      button.appendChild(hint);
+      el.paletteResults.appendChild(button);
+    });
+  }
+
+  function runPaletteItem(index) {
+    const item = state.paletteItems[index];
+    closeDialog(el.paletteDialog);
+    if (item) item.run();
+  }
+
+  // ─────────────────────────────────────────────
+  // SIDEBAR
+  // ─────────────────────────────────────────────
+
+  function openSidebar() {
+    document.body.classList.add('sidebar-open');
+    el.mobileMenuBtn.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeSidebar() {
+    document.body.classList.remove('sidebar-open');
+    el.mobileMenuBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  // ─────────────────────────────────────────────
+  // EVENT WIRING
+  // ─────────────────────────────────────────────
+
+  document.addEventListener('click', event => {
+    const opener = event.target.closest('[data-open-prompt]');
+    if (opener) openPromptEditor(null, opener.dataset.sectionHint);
+  });
+
+  document.querySelectorAll('[data-section]').forEach(button => {
+    button.addEventListener('click', () => setSection(button.dataset.section));
+  });
+
+  el.sidebar.addEventListener('click', event => {
+    const pinnedButton = event.target.closest('[data-nav-mode="pinned"]');
+    const categoryButton = event.target.closest('[data-category]');
+    if (pinnedButton) {
+      if (state.section === 'history') setSection('library');
+      state.pinnedOnly = !state.pinnedOnly;
+      state.category = '';
+      el.categoryFilter.value = '';
+      pinnedButton.classList.toggle('active', state.pinnedOnly);
+      render();
+      closeSidebar();
+    } else if (categoryButton) {
+      state.pinnedOnly = false;
+      state.category = categoryButton.dataset.category;
+      el.categoryFilter.value = state.category;
+      render();
+      closeSidebar();
+    }
+  });
+
+  el.sidebarSettingsBtn.addEventListener('click', openSettings);
+  el.mobileMenuBtn.addEventListener('click', openSidebar);
+  el.sidebarCloseBtn.addEventListener('click', closeSidebar);
+  el.sidebarBackdrop.addEventListener('click', closeSidebar);
+  el.mobileMenuBtn.setAttribute('aria-expanded', 'false');
+
+  el.searchInput.addEventListener('input', () => {
+    state.search = el.searchInput.value;
+    el.clearSearchBtn.style.display = state.search.length ? 'flex' : 'none';
+    render();
+  });
+
+  el.clearSearchBtn.addEventListener('click', () => {
+    state.search = '';
+    el.searchInput.value = '';
+    el.clearSearchBtn.style.display = 'none';
+    el.searchInput.focus();
+    render();
+  });
+
+  el.categoryFilter.addEventListener('change', () => {
+    state.category = el.categoryFilter.value;
+    state.pinnedOnly = false;
+    render();
+  });
+
+  el.sortSelect.addEventListener('change', () => {
+    state.sort = el.sortSelect.value;
+    Settings.writePrefs({ sort: state.sort });
+    render();
+  });
+
+  document.querySelectorAll('.view-btn[data-view-mode]').forEach(button => {
+    button.addEventListener('click', () => {
+      state.view = button.dataset.viewMode;
+      Settings.writePrefs({ view: state.view });
+      state.expandedIds = new Set();
+      updateViewButtons();
+      render();
+    });
+  });
+
+  function updateViewButtons() {
+    document.querySelectorAll('.view-btn[data-view-mode]').forEach(button => {
+      const active = button.dataset.viewMode === state.view;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+  }
+
+  el.promptsContainer.addEventListener('click', event => {
     const button = event.target.closest('button[data-action]');
-    if (!button || !promptsContainer.contains(button)) return;
+    if (!button) return;
     if (button.dataset.action === 'clear-filters') {
-        searchInput.value = '';
-        categoryFilter.value = '';
-        showPinnedOnly = false;
-        clearSearchBtn.style.display = 'none';
-        renderPrompts();
-        return;
+      state.search = '';
+      state.category = '';
+      state.pinnedOnly = false;
+      el.searchInput.value = '';
+      el.categoryFilter.value = '';
+      el.clearSearchBtn.style.display = 'none';
+      render();
+      return;
     }
     const id = Number(button.dataset.id);
     if (!Number.isFinite(id)) return;
 
     const actions = {
-        move: () => window.movePrompt(id, Number(button.dataset.direction)),
-        open: () => window.openPromptDetail(id),
-        pin: () => window.togglePin(id),
-        copy: () => window.copyPrompt(id),
-        edit: () => window.editPrompt(id),
-        delete: () => window.deletePrompt(id),
-        expand: () => window.toggleExpand(id)
+      move: () => movePrompt(id, Number(button.dataset.direction)),
+      open: () => openPromptDetail(id),
+      pin: () => togglePin(id),
+      copy: () => copyPrompt(id),
+      edit: () => openPromptEditor(id),
+      delete: () => deletePrompt(id),
+      expand: () => toggleExpand(id)
     };
-    actions[button.dataset.action]?.();
-});
+    const action = actions[button.dataset.action];
+    if (action) action();
+  });
 
-detailContent.addEventListener('click', event => {
+  // Targeted DOM toggle rather than a re-render, which is what makes
+  // expand/collapse reliable on a phone. A pinned prompt renders
+  // twice, so every instance of the id is updated.
+  function toggleExpand(id) {
+    const items = el.promptsContainer.querySelectorAll(`.prompt-item[data-id="${id}"]`);
+    if (!items.length) return;
+    const expanded = !state.expandedIds.has(id);
+    if (expanded) state.expandedIds.add(id);
+    else state.expandedIds.delete(id);
+    items.forEach(item => {
+      item.classList.toggle('is-expanded', expanded);
+      const toggle = item.querySelector('.preview-toggle');
+      if (toggle) {
+        toggle.innerHTML = expanded
+          ? '<i class="fas fa-chevron-up"></i> Show less'
+          : '<i class="fas fa-chevron-down"></i> Show more';
+      }
+    });
+  }
+
+  el.detailContent.addEventListener('click', event => {
     const button = event.target.closest('button[data-detail-action]');
     if (!button) return;
+    const id = state.selectedPromptId;
     const actions = {
-        close: () => window.closePromptDetail(),
-        copy: () => window.copyPrompt(selectedPromptId),
-        pin: () => window.togglePin(selectedPromptId),
-        edit: () => window.editPrompt(selectedPromptId),
-        delete: () => window.deletePrompt(selectedPromptId)
+      close: closePromptDetail,
+      copy: () => copyPrompt(id),
+      pin: () => togglePin(id),
+      edit: () => openPromptEditor(id),
+      delete: () => deletePrompt(id),
+      'to-workshop': () => movePromptToSection(id, 'workshop'),
+      use: () => { state.metaPromptId = id; setSection('workshop'); }
     };
-    actions[button.dataset.detailAction]?.();
-});
+    const action = actions[button.dataset.detailAction];
+    if (action) action();
+  });
 
-searchInput.addEventListener('input', () => {
-    clearSearchBtn.style.display = searchInput.value.length > 0 ? 'flex' : 'none';
-    renderPrompts();
-});
-
-clearSearchBtn.addEventListener('click', () => {
-    searchInput.value = '';
-    clearSearchBtn.style.display = 'none';
-    searchInput.focus();
-    renderPrompts();
-});
-
-categoryFilter.addEventListener('change', () => {
-    showPinnedOnly = false;
-    renderPrompts();
-});
-sortSelect.addEventListener('change', renderPrompts);
-
-document.addEventListener('click', event => {
-    const trigger = event.target.closest('[data-open-prompt]');
-    if (trigger) openNewPromptEditor();
-});
-
-closePromptBtn.addEventListener('click', () => closeModal(promptModal));
-closePromptIcon.addEventListener('click', () => closeModal(promptModal));
-
-function openSidebar() {
-    document.body.classList.add('sidebar-open');
-    mobileMenuBtn.setAttribute('aria-expanded', 'true');
-}
-
-function closeSidebar() {
-    document.body.classList.remove('sidebar-open');
-    mobileMenuBtn.setAttribute('aria-expanded', 'false');
-}
-
-mobileMenuBtn.setAttribute('aria-expanded', 'false');
-mobileMenuBtn.addEventListener('click', openSidebar);
-sidebarCloseBtn.addEventListener('click', closeSidebar);
-sidebarBackdrop.addEventListener('click', closeSidebar);
-
-workspaceSidebar.addEventListener('click', event => {
-    const modeButton = event.target.closest('[data-nav-mode]');
-    const categoryButton = event.target.closest('[data-category]');
-    if (modeButton) {
-        showPinnedOnly = modeButton.dataset.navMode === 'pinned';
-        categoryFilter.value = '';
-        selectedPromptId = null;
-        renderPrompts();
-        closeSidebar();
-    } else if (categoryButton) {
-        showPinnedOnly = false;
-        categoryFilter.value = categoryButton.dataset.category;
-        selectedPromptId = null;
-        renderPrompts();
-        closeSidebar();
-    }
-});
-
-document.querySelector('.mobile-tabbar').addEventListener('click', event => {
-    const button = event.target.closest('[data-mobile-action]');
+  // Workshop
+  el.workshopList.addEventListener('click', event => {
+    const button = event.target.closest('[data-meta-id]');
     if (!button) return;
-    const action = button.dataset.mobileAction;
-    if (action === 'library' || action === 'pinned') {
-        showPinnedOnly = action === 'pinned';
-        categoryFilter.value = '';
-        selectedPromptId = null;
-        renderPrompts();
-        document.querySelector('.library-panel').scrollTop = 0;
-    } else if (action === 'categories') {
-        openSidebar();
-    } else if (action === 'settings') {
-        accountEmail.textContent = currentUser?.email || 'Unknown account';
-        openModal(settingsModal, closeSettingsBtn);
+    state.metaPromptId = Number(button.dataset.metaId);
+    renderWorkshop();
+  });
+
+  el.workshopRunBtn.addEventListener('click', runWorkshop);
+  el.workshopStopBtn.addEventListener('click', () => {
+    if (state.abortController) state.abortController.abort();
+  });
+  el.workshopClearBtn.addEventListener('click', () => {
+    el.workshopInput.value = '';
+    el.workshopInput.focus();
+  });
+  el.workshopOutputBack.addEventListener('click', () => {
+    el.workshopOutputPane.classList.remove('is-open');
+  });
+  el.workshopCopyBtn.addEventListener('click', () => {
+    if (state.lastRun) copyText(state.lastRun.output, 'Output copied.');
+  });
+  el.workshopSaveLibraryBtn.addEventListener('click', () => saveRunOutput('library'));
+  el.workshopSaveScratchBtn.addEventListener('click', () => saveRunOutput('scratch'));
+  el.workshopDiscardBtn.addEventListener('click', () => {
+    state.lastRun = null;
+    el.workshopOutput.textContent = '';
+    el.workshopReceipt.textContent = '';
+    el.workshopOutputActions.hidden = true;
+    el.workshopOutputPane.classList.remove('is-open');
+  });
+
+  // History
+  el.historyRange.addEventListener('change', () => {
+    state.historyRange = el.historyRange.value;
+    renderHistory();
+  });
+  el.historyProvider.addEventListener('change', () => {
+    state.historyProvider = el.historyProvider.value;
+    renderHistory();
+  });
+  el.historyStatus.addEventListener('change', () => {
+    state.historyStatus = el.historyStatus.value;
+    renderHistory();
+  });
+  el.historyUnsaved.addEventListener('change', () => {
+    state.historyUnsavedOnly = el.historyUnsaved.checked;
+    renderHistory();
+  });
+
+  el.historySelectBtn.addEventListener('click', () => {
+    state.selectMode = true;
+    state.selectedRunIds = new Set();
+    renderHistory();
+  });
+
+  el.historyCancelSelect.addEventListener('click', () => {
+    state.selectMode = false;
+    state.selectedRunIds = new Set();
+    renderHistory();
+  });
+
+  // Select-all respects the current filter — filter to failed runs,
+  // select all, delete has to work.
+  el.historySelectAll.addEventListener('change', () => {
+    const visible = filteredRuns();
+    if (el.historySelectAll.checked) visible.forEach(r => state.selectedRunIds.add(r.id));
+    else visible.forEach(r => state.selectedRunIds.delete(r.id));
+    renderHistory();
+  });
+
+  el.historyDeleteBtn.addEventListener('click', () => {
+    const visible = filteredRuns().filter(r => state.selectedRunIds.has(r.id));
+    if (visible.length) requestRunDeletion(visible.map(r => r.id));
+  });
+
+  el.historyList.addEventListener('click', event => {
+    const open = event.target.closest('[data-run-open]');
+    const keep = event.target.closest('[data-run-keep]');
+    const remove = event.target.closest('[data-run-delete]');
+    if (open) { openRunDetail(Number(open.dataset.runOpen)); return; }
+    if (keep) {
+      const id = Number(keep.dataset.runKeep);
+      const run = Cloud.getRuns().find(r => r.id === id);
+      if (!run) return;
+      Cloud.updateRun(id, { keep: !run.keep })
+        .then(() => { renderHistory(); updateSweepSummary(); })
+        .catch(() => showToast('Could not update that run.'));
+      return;
     }
-});
+    if (remove) { requestRunDeletion([Number(remove.dataset.runDelete)]); }
+  });
 
-sidebarSyncBtn.addEventListener('click', async () => {
-    await syncFromCloud(true);
-});
+  el.historyList.addEventListener('change', event => {
+    const box = event.target.closest('[data-run-select]');
+    if (!box) return;
+    const id = Number(box.dataset.runSelect);
+    if (box.checked) state.selectedRunIds.add(id);
+    else state.selectedRunIds.delete(id);
+    const row = box.closest('.history-row');
+    if (row) row.classList.toggle('is-selected', box.checked);
+    updateSelectionCount();
+  });
 
-promptText.addEventListener('input', () => {
-    editorCount.textContent = `${promptText.value.length.toLocaleString()} characters`;
-});
+  // Settings
+  el.settingsBtn.addEventListener('click', openSettings);
 
-document.querySelectorAll('.modal').forEach(modal => {
-    modal.addEventListener('click', event => {
-        if (event.target === modal) closeModal(modal);
+  el.settingsProvider.addEventListener('change', () => { collectCredentials(); renderWorkshop(); });
+  el.settingsEffort.addEventListener('change', collectCredentials);
+
+  el.providerRows.addEventListener('change', event => {
+    if (event.target.closest('[data-key-input]') || event.target.closest('[data-model-input]')) {
+      const creds = collectCredentials();
+      const keyInput = event.target.closest('[data-key-input]');
+      if (keyInput) populateModelSelect(keyInput.dataset.keyInput, creds);
+      renderWorkshop();
+    }
+  });
+
+  el.providerRows.addEventListener('click', event => {
+    const button = event.target.closest('[data-test-provider]');
+    if (!button) return;
+    const providerId = button.dataset.testProvider;
+    const creds = collectCredentials();
+    const note = el.providerRows.querySelector(`[data-test-note="${providerId}"]`);
+    note.className = 'provider-test-note';
+    note.textContent = 'Testing…';
+    button.disabled = true;
+
+    Runner.listModels(providerId, creds.keys[providerId], { force: true })
+      .then(result => {
+        note.className = 'provider-test-note is-ok';
+        note.textContent = `Key works — ${result.models.length} models available.`;
+        populateModelSelect(providerId, Settings.readCredentials());
+        renderSettings();
+      })
+      .catch(error => {
+        note.className = 'provider-test-note is-error';
+        note.textContent = [error.message, error.hint].filter(Boolean).join(' ');
+      })
+      .finally(() => { button.disabled = false; });
+  });
+
+  function saveCloudSettings() {
+    const patch = {
+      defaultMaxTokens: Number(el.settingsMaxTokens.value) || 16000,
+      scratchRetentionDays: el.settingsScratchDays.value === '' ? null : Number(el.settingsScratchDays.value),
+      runsRetentionDays: el.settingsRunsDays.value === '' ? null : Number(el.settingsRunsDays.value)
+    };
+    Cloud.saveSettings(patch)
+      .then(updateSweepSummary)
+      .catch(() => showToast('Could not save those settings.'));
+  }
+
+  el.settingsMaxTokens.addEventListener('change', saveCloudSettings);
+  el.settingsScratchDays.addEventListener('change', saveCloudSettings);
+  el.settingsRunsDays.addEventListener('change', saveCloudSettings);
+
+  el.runSweepBtn.addEventListener('click', () => {
+    const { expiredScratch, staleRuns } = Cloud.sweepCandidates();
+    confirmAction({
+      title: 'Clean up now?',
+      description: `${expiredScratch.length} expired Scratch ${expiredScratch.length === 1 ? 'prompt' : 'prompts'} and ${staleRuns.length} old ${staleRuns.length === 1 ? 'run' : 'runs'} will be deleted. Pinned prompts and runs marked Keep will remain.`,
+      confirmLabel: 'Clean up',
+      onConfirm: () => {
+        Cloud.runSweep().then(result => {
+          showToast(`Removed ${result.prompts} prompts and ${result.runs} runs.`);
+          render();
+          updateSweepSummary();
+        });
+      }
     });
-});
+  });
 
-document.addEventListener('keydown', event => {
-    const activeModal = [...document.querySelectorAll('.modal.active')].pop();
-    if (activeModal) {
-        if (event.key === 'Escape') {
-            event.preventDefault();
-            closeModal(activeModal);
-            return;
-        }
-        if (event.key === 'Tab') {
-            const focusable = [...activeModal.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')]
-                .filter(element => element.offsetParent !== null);
-            if (!focusable.length) return;
-            const first = focusable[0];
-            const last = focusable[focusable.length - 1];
-            if (event.shiftKey && document.activeElement === first) {
-                event.preventDefault();
-                last.focus();
-            } else if (!event.shiftKey && document.activeElement === last) {
-                event.preventDefault();
-                first.focus();
-            }
-        }
-        return;
+  el.exportBtn.addEventListener('click', () => {
+    const payload = JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      prompts: Cloud.getPrompts()
+    }, null, 2);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `prompt-studio-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+
+  el.signOutBtn.addEventListener('click', async () => {
+    el.signOutBtn.disabled = true;
+    const result = await Cloud.signOut();
+    el.signOutBtn.disabled = false;
+    if (!result.ok) { showToast(result.error); return; }
+    closeDialog(el.settingsDialog);
+    endSession();
+  });
+
+  el.syncBtn.addEventListener('click', () => {
+    Cloud.syncFromCloud().then(ok => showToast(ok ? 'Cloud sync complete.' : 'Sync failed.'));
+  });
+  el.sidebarSyncBtn.addEventListener('click', () => {
+    Cloud.syncFromCloud().then(ok => showToast(ok ? 'Cloud sync complete.' : 'Sync failed.'));
+  });
+
+  // Palette
+  el.paletteInput.addEventListener('input', () => buildPalette(el.paletteInput.value));
+
+  el.paletteResults.addEventListener('click', event => {
+    const button = event.target.closest('[data-palette-index]');
+    if (button) runPaletteItem(Number(button.dataset.paletteIndex));
+  });
+
+  el.paletteDialog.addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      const delta = event.key === 'ArrowDown' ? 1 : -1;
+      const count = state.paletteItems.length;
+      if (!count) return;
+      state.paletteIndex = (state.paletteIndex + delta + count) % count;
+      renderPalette();
+      const active = el.paletteResults.querySelector('.is-active');
+      if (active) active.scrollIntoView({ block: 'nearest' });
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      runPaletteItem(state.paletteIndex);
     }
+  });
 
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+  // Global keys
+  document.addEventListener('keydown', event => {
+    const meta = event.metaKey || event.ctrlKey;
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName) ||
+      document.activeElement.isContentEditable;
+
+    if (meta && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      openPalette();
+      return;
+    }
+    if (event.key === '/' && !typing && !document.querySelector('dialog[open]')) {
+      event.preventDefault();
+      openPalette();
+      return;
+    }
+    if (meta && event.key === 'Enter' && state.section === 'workshop' && !state.running) {
+      event.preventDefault();
+      runWorkshop();
+      return;
+    }
+    if (meta && event.key.toLowerCase() === 's') {
+      if (el.promptDialog.open) {
         event.preventDefault();
-        searchInput.focus();
-        searchInput.select();
-    } else if (event.key === 'Escape') {
-        if (document.body.classList.contains('sidebar-open')) closeSidebar();
-        else window.closePromptDetail();
+        el.promptForm.requestSubmit();
+      }
+      return;
     }
-});
-
-promptForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    
-    const tagsArray = promptTags.value.split(',')
-        .map(t => t.trim())
-        .filter(t => t.length > 0);
-
-    const promptData = {
-        title: promptTitle.value.trim(),
-        category: promptCategory.value.trim(),
-        tags: tagsArray,
-        text: promptText.value.trim(),
-        notes: promptNotes.value.trim(),
-        updatedAt: Date.now()
-    };
-
-    let savedPrompt;
-    if (editState.isEditing) {
-        appData.prompts = appData.prompts.map(p => {
-            if (p.id === editState.id) {
-                savedPrompt = { ...p, ...promptData };
-                return savedPrompt;
-            }
-            return p;
-        });
-    } else {
-        const newId = Date.now();
-        savedPrompt = {
-            ...promptData,
-            id: newId,
-            createdAt: newId,
-            order: newId, // sorts after existing (typically smaller) order values in Custom Order
-            revision: 0
-        };
-        appData.prompts.push(savedPrompt);
+    if (event.key === 'Escape' && !document.querySelector('dialog[open]')) {
+      if (document.body.classList.contains('sidebar-open')) closeSidebar();
+      else if (el.workshopOutputPane.classList.contains('is-open')) {
+        el.workshopOutputPane.classList.remove('is-open');
+      } else closePromptDetail();
     }
+  });
 
-    selectedPromptId = savedPrompt.id;
-    saveLocalData([savedPrompt]);
-    renderPrompts();
-    closeModal(promptModal);
-    if (window.matchMedia('(max-width: 999px)').matches) window.openPromptDetail(savedPrompt.id);
-});
-
-// Settings & Sync
-settingsBtn.addEventListener('click', () => {
-    accountEmail.textContent = currentUser?.email || 'Unknown account';
-    openModal(settingsModal, closeSettingsBtn);
-});
-
-closeSettingsBtn.addEventListener('click', () => closeModal(settingsModal));
-closeSettingsIcon.addEventListener('click', () => closeModal(settingsModal));
-cancelDeleteBtn.addEventListener('click', () => closeModal(deleteModal));
-confirmDeleteBtn.addEventListener('click', performDelete);
-
-signOutBtn.addEventListener('click', async () => {
-    signOutBtn.disabled = true;
-    const { error } = await supabaseClient.auth.signOut();
-    signOutBtn.disabled = false;
-    if (error) {
-        showToast(error.message);
-        return;
+  // Flush a held delete if the tab is closing — the timer would
+  // otherwise be lost. The rows survive either way; this just avoids
+  // a delete the user already confirmed silently not happening.
+  window.addEventListener('pagehide', () => {
+    if (state.pendingRunDelete) {
+      clearTimeout(state.pendingRunDelete.timer);
+      commitRunDeletion();
     }
-    closeModal(settingsModal);
-    endUserSession();
-});
+  });
 
-loginForm.addEventListener('submit', async event => {
-    event.preventDefault();
-    loginError.textContent = '';
-    const submitButton = loginForm.querySelector('button[type="submit"]');
-    submitButton.disabled = true;
-    submitButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in…';
+  // ─────────────────────────────────────────────
+  // SYNC STATUS
+  // ─────────────────────────────────────────────
 
-    try {
-        const authRequest = supabaseClient.auth.signInWithPassword({
-            email: loginEmail.value.trim(),
-            password: loginPassword.value
-        });
-        const { data, error } = await withTimeout(authRequest, 15000);
-
-        if (error) throw error;
-        if (!data?.user) throw new Error('Sign-in succeeded but no user session was returned. Please refresh and try again.');
-
-        loginPassword.value = '';
-        await startUserSession(data.user);
-    } catch (error) {
-        console.error('Sign-in failed:', error);
-        loginError.textContent = error.message || 'Sign-in failed. Please refresh and try again.';
-    } finally {
-        submitButton.disabled = false;
-        submitButton.innerHTML = '<i class="fas fa-right-to-bracket"></i> Sign in';
-    }
-});
-
-syncBtn.addEventListener('click', async () => {
-    await syncFromCloud(true);
-});
-
-function startUserSession(user) {
-    if (!user) return Promise.reject(new Error('No authenticated user session was returned.'));
-    if (currentUser?.id === user.id && sessionStartPromise) return sessionStartPromise;
-    if (currentUser?.id === user.id) {
-        document.body.classList.add('is-authenticated');
-        authScreen.hidden = true;
-        appContainer.hidden = false;
-        return Promise.resolve();
-    }
-    currentUser = user;
-    cloudRevision = 0;
-    accountEmail.textContent = user.email || user.id;
-    sidebarAccountEmail.textContent = user.email || 'Cloud workspace';
-    document.body.classList.add('is-authenticated');
-    authScreen.hidden = true;
-    appContainer.hidden = false;
-    const userId = user.id;
-    const task = (async () => {
-        await loadLocalData();
-        if (currentUser?.id !== userId) return;
-        ensureOrderField();
-        updateViewButtons();
-        renderPrompts();
-        populateCategories();
-        // Do not hold the login screen open while cloud data loads. Sync errors
-        // are reported inside syncFromCloud and cached data remains usable.
-        void syncFromCloud(false);
-    })();
-    const trackedTask = task.finally(() => {
-        if (sessionStartPromise === trackedTask) sessionStartPromise = null;
-    });
-    sessionStartPromise = trackedTask;
-    return trackedTask;
-}
-
-function withTimeout(promise, milliseconds) {
-    let timer;
-    const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('Sign-in timed out. Check your connection and try again.')), milliseconds);
-    });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
-function endUserSession() {
-    const previousUserId = currentUser?.id;
-    currentUser = null;
-    sessionStartPromise = null;
-    cloudRevision = 0;
-    pendingMutations = new Map();
-    selectedPromptId = null;
-    showPinnedOnly = false;
-    clearTimeout(syncTimeout);
-    appData = normalizeData(null);
-    localStorage.removeItem('promptManagerData');
-    if (previousUserId) void clearLocalUserData(previousUserId);
-    document.body.classList.remove('is-authenticated');
-    document.body.classList.remove('sidebar-open');
-    detailPanel.classList.remove('is-open');
-    appContainer.hidden = true;
-    authScreen.hidden = false;
-    loginEmail.focus();
-}
-
-async function clearLocalUserData(userId) {
-    try {
-        await localWriteQueue.catch(() => {});
-        const db = await openLocalDb();
-        const transaction = db.transaction(['prompts', 'outbox', 'meta'], 'readwrite');
-        ['prompts', 'outbox'].forEach(storeName => {
-            const request = transaction.objectStore(storeName).index('by_user').openCursor(IDBKeyRange.only(userId));
-            request.onsuccess = () => {
-                const cursor = request.result;
-                if (!cursor) return;
-                cursor.delete();
-                cursor.continue();
-            };
-        });
-        transaction.objectStore('meta').delete(userId);
-        await idbTransactionDone(transaction);
-    } catch (error) {
-        console.error('Unable to clear local user data:', error);
-    }
-}
-
-function queueCloudSave(delay = 700) {
-    if (!currentUser) return;
-    clearTimeout(syncTimeout);
-    syncTimeout = setTimeout(() => { void flushPendingChanges(); }, delay);
-}
-
-function setCloudState(state, message) {
+  Cloud.on('status', ({ state: syncState, message }) => {
     const icons = {
-        syncing: '<i class="fas fa-spinner fa-spin"></i>',
-        synced: '<i class="fas fa-check"></i>',
-        error: '<i class="fas fa-exclamation-triangle"></i>'
+      syncing: '<i class="fas fa-spinner fa-spin"></i>',
+      synced: '<i class="fas fa-check"></i>',
+      error: '<i class="fas fa-exclamation-triangle"></i>'
     };
-    syncBtn.innerHTML = icons[state] || '<i class="fas fa-cloud"></i>';
-    cloudStatus.textContent = message;
-    saveState.dataset.state = state;
-    sidebarSyncBtn.dataset.state = state;
-    saveStateLabel.textContent = state === 'synced' ? 'Saved' : message;
-    sidebarSyncLabel.textContent = state === 'synced' ? 'All changes saved' : message;
-    syncBtn.setAttribute('aria-label', state === 'syncing' ? 'Syncing prompts' : state === 'error' ? 'Sync failed. Retry' : 'Sync prompts');
-    if (state === 'synced') {
-        setTimeout(() => { syncBtn.innerHTML = '<i class="fas fa-cloud"></i>'; }, 1500);
+    el.syncBtn.innerHTML = icons[syncState] || '<i class="fas fa-cloud"></i>';
+    el.cloudStatus.textContent = message;
+    el.saveState.dataset.state = syncState;
+    el.sidebarSyncBtn.dataset.state = syncState;
+    el.saveStateLabel.textContent = syncState === 'synced' ? 'Saved' : message;
+    el.sidebarSyncLabel.textContent = syncState === 'synced' ? 'All changes saved' : message;
+    el.syncBtn.setAttribute('aria-label',
+      syncState === 'syncing' ? 'Syncing' : syncState === 'error' ? 'Sync failed. Retry' : 'Sync');
+    if (syncState === 'synced') {
+      setTimeout(() => { el.syncBtn.innerHTML = '<i class="fas fa-cloud"></i>'; }, 1500);
     }
-}
+  });
 
-function promptFromCloudRow(row) {
-    return normalizeData({ prompts: [{
-        id: row.id,
-        title: row.title,
-        text: row.prompt_text,
-        category: row.category,
-        tags: row.tags,
-        notes: row.notes,
-        pinned: row.pinned,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        order: row.sort_order,
-        revision: row.revision
-    }] }).prompts[0];
-}
+  Cloud.on('change', () => {
+    render();
+    if (el.settingsDialog.open) updateSweepSummary();
+  });
 
-function mutationToPayload(mutation) {
-    if (mutation.action === 'delete') {
-        return {
-            id: mutation.id,
-            action: 'delete',
-            expected_revision: mutation.expectedRevision,
-            deleted_at: mutation.deletedAt
-        };
+  // ─────────────────────────────────────────────
+  // SESSION
+  // ─────────────────────────────────────────────
+
+  async function beginSession(user) {
+    document.body.classList.add('is-authenticated');
+    el.authScreen.hidden = true;
+    el.appContainer.hidden = false;
+    el.sidebarAccountEmail.textContent = user.email || 'Cloud workspace';
+    el.accountEmail.textContent = user.email || user.id;
+
+    await Cloud.startSession(user);
+    setSection(prefs.section === 'history' ? 'history' : prefs.section);
+
+    // Load-time sweep. Nothing pinned or marked Keep is touched, and
+    // Library and Workshop are never candidates at all.
+    const { expiredScratch, staleRuns } = Cloud.sweepCandidates();
+    if (expiredScratch.length || staleRuns.length) {
+      showToast(
+        `${expiredScratch.length + staleRuns.length} expired items can be cleaned up.`,
+        'Clean up',
+        () => Cloud.runSweep().then(result => {
+          showToast(`Removed ${result.prompts} prompts and ${result.runs} runs.`);
+          render();
+        })
+      );
     }
+  }
 
-    const prompt = mutation.prompt;
-    return {
-        id: mutation.id,
-        action: 'upsert',
-        expected_revision: mutation.expectedRevision,
-        title: prompt.title,
-        text: prompt.text,
-        category: prompt.category || '',
-        tags: prompt.tags || [],
-        notes: prompt.notes || '',
-        pinned: Boolean(prompt.pinned),
-        created_at: prompt.createdAt,
-        updated_at: prompt.updatedAt,
-        sort_order: prompt.order
-    };
-}
+  function endSession() {
+    Cloud.endSession();
+    document.body.classList.remove('is-authenticated', 'sidebar-open');
+    el.detailPanel.classList.remove('is-open');
+    el.appContainer.hidden = true;
+    el.authScreen.hidden = false;
+    el.loginEmail.focus();
+  }
 
-function nextMutationBatch() {
-    const batch = [];
-    let encodedBytes = 2;
-    for (const mutation of pendingMutations.values()) {
-        const payload = mutationToPayload(mutation);
-        const payloadBytes = new Blob([JSON.stringify(payload)]).size + 1;
-        if (batch.length && (batch.length >= 100 || encodedBytes + payloadBytes > 900000)) break;
-        batch.push({ mutation, payload });
-        encodedBytes += payloadBytes;
-    }
-    return batch;
-}
-
-function flushPendingChanges() {
-    if (!currentUser || pendingMutations.size === 0) return Promise.resolve();
-    if (flushPromise) return flushPromise;
-
-    let retryImmediately = false;
-    const task = performCloudFlush()
-        .then(shouldRetry => { retryImmediately = Boolean(shouldRetry); })
-        .finally(() => {
-            if (flushPromise === task) flushPromise = null;
-            if (retryImmediately && currentUser && pendingMutations.size > 0) queueCloudSave(0);
-        });
-    flushPromise = task;
-    return task;
-}
-
-async function performCloudFlush() {
-    if (pullPromise) await pullPromise;
-    if (!currentUser || pendingMutations.size === 0) return false;
-
-    const userId = currentUser.id;
-    const batch = nextMutationBatch();
-    if (!batch.length) return false;
-    setCloudState('syncing', 'Saving…');
+  el.loginForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    el.loginError.textContent = '';
+    el.loginSubmit.disabled = true;
+    // Preserved so a failed sign-in restores the button exactly as
+    // the markup shipped it, rather than a different label.
+    const original = el.loginSubmit.innerHTML;
+    el.loginSubmit.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Signing in…';
 
     try {
-        await localWriteQueue.catch(() => {});
-        const { data, error } = await supabaseClient
-            .schema(SUPABASE_CONFIG.schema)
-            .rpc('apply_prompt_changes', {
-                changes: batch.map(item => item.payload)
-            });
-        if (error) throw error;
-        if (currentUser?.id !== userId) return false;
-
-        const resultsById = new Map((data || []).map(row => [Number(row.prompt_id), row]));
-        const outboxDeletes = [];
-        const outboxPuts = [];
-        const localUpserts = [];
-
-        batch.forEach(({ mutation }) => {
-            const result = resultsById.get(mutation.id);
-            if (!result) return;
-            cloudRevision = Math.max(cloudRevision, Number(result.new_revision || 0));
-
-            const currentMutation = pendingMutations.get(mutation.id);
-            const localPrompt = appData.prompts.find(prompt => prompt.id === mutation.id);
-            if (localPrompt) {
-                localPrompt.revision = Number(result.new_revision || 0);
-                localUpserts.push(localPrompt);
-            }
-
-            if (currentMutation?.mutationId === mutation.mutationId) {
-                pendingMutations.delete(mutation.id);
-                outboxDeletes.push(mutation.id);
-            } else if (currentMutation) {
-                currentMutation.expectedRevision = Number(result.new_revision || 0);
-                if (currentMutation.prompt) currentMutation.prompt.revision = Number(result.new_revision || 0);
-                outboxPuts.push(currentMutation);
-            }
-        });
-
-        await persistLocalBatch({
-            upserts: localUpserts,
-            outboxPuts,
-            outboxDeletes,
-            revision: cloudRevision
-        });
-        setCloudState('synced', 'Synced');
-        return pendingMutations.size > 0;
+      const result = await Cloud.signIn(el.loginEmail.value.trim(), el.loginPassword.value);
+      if (!result.ok) throw new Error(result.error);
+      el.loginPassword.value = '';
+      await beginSession(result.user);
     } catch (error) {
-        if (String(error.message).includes('PROMPT_VERSION_CONFLICT') || error.code === '40001') {
-            // Pull a full, authoritative revision snapshot. Pending local rows
-            // remain in the outbox and are rebased before the queued retry.
-            return await syncFromCloud(false, true, true);
-        }
-        console.error('Error saving to Supabase:', error);
-        setCloudState('error', 'Sync failed');
-        showToast('Cloud save failed. Your changes remain queued locally.');
-        return false;
+      el.loginError.textContent = error.message || 'Sign-in failed. Please try again.';
+    } finally {
+      el.loginSubmit.disabled = false;
+      el.loginSubmit.innerHTML = original;
     }
-}
+  });
 
-function syncFromCloud(showSuccess = false, forceFull = false, fromConflict = false) {
-    if (!currentUser) return Promise.resolve();
+  // ─────────────────────────────────────────────
+  // INIT
+  // ─────────────────────────────────────────────
 
-    if (!pullPromise) {
-        const task = performCloudPull(forceFull, fromConflict).finally(() => {
-            if (pullPromise === task) pullPromise = null;
-            if (currentUser && pendingMutations.size > 0) queueCloudSave(0);
-        });
-        pullPromise = task;
+  async function init() {
+    applyTheme(prefs.theme);
+    el.sortSelect.value = state.sort;
+    updateViewButtons();
+    el.clearSearchBtn.style.display = 'none';
+
+    if (!window.supabase) {
+      el.loginError.textContent = 'Cloud library failed to load. Check your connection and refresh.';
+      return;
+    }
+    if (!Cloud.configured()) {
+      el.loginError.textContent = 'Cloud sync is not configured yet (see supabase-config.js).';
+      return;
     }
 
-    return pullPromise.then(() => {
-        if (showSuccess) showToast('Cloud sync complete.');
-        return true;
-    }).catch(() => {
-        // performCloudPull already recorded the diagnostic and preserved the
-        // local cache. Keep event-handler callers from producing an unhandled
-        // promise rejection while the user is offline.
-        return false;
+    Cloud.onAuthChange((event, session) => {
+      if (event === 'SIGNED_OUT' && Cloud.getUser()) endSession();
+      if (event === 'SIGNED_IN' && session && session.user && !Cloud.getUser()) {
+        setTimeout(() => beginSession(session.user), 0);
+      }
     });
-}
 
-async function performCloudPull(forceFull, fromConflict) {
-    if (flushPromise && !fromConflict) await flushPromise;
-    if (!currentUser) return;
+    const session = await Cloud.getSession();
+    if (session && session.user) await beginSession(session.user);
+  }
 
-    const userId = currentUser.id;
-    const startingRevision = forceFull ? 0 : cloudRevision;
-    let pageCursor = startingRevision;
-    let newestRevision = cloudRevision;
-    const localUpserts = new Map();
-    const localDeletes = new Set();
-    const outboxPuts = new Map();
-    let changed = false;
-    setCloudState('syncing', 'Checking…');
-
-    try {
-        while (true) {
-            const { data, error } = await supabaseClient
-                .schema(SUPABASE_CONFIG.schema)
-                .from('prompt_items')
-                .select(PROMPT_COLUMNS)
-                .eq('user_id', userId)
-                .gt('revision', pageCursor)
-                .order('revision', { ascending: true })
-                .limit(DELTA_PAGE_SIZE);
-            if (error) throw error;
-            if (currentUser?.id !== userId) return;
-            if (!data?.length) break;
-
-            data.forEach(row => {
-                const id = Number(row.id);
-                const revision = Number(row.revision || 0);
-                pageCursor = Math.max(pageCursor, revision);
-                newestRevision = Math.max(newestRevision, revision);
-                const pending = pendingMutations.get(id);
-
-                if (pending) {
-                    pending.expectedRevision = revision;
-                    if (pending.prompt) pending.prompt.revision = revision;
-                    const localPrompt = appData.prompts.find(prompt => prompt.id === id);
-                    if (localPrompt) localPrompt.revision = revision;
-                    outboxPuts.set(id, pending);
-                    return;
-                }
-
-                const existingIndex = appData.prompts.findIndex(prompt => prompt.id === id);
-                if (row.deleted_at !== null) {
-                    if (existingIndex >= 0) appData.prompts.splice(existingIndex, 1);
-                    localDeletes.add(id);
-                } else {
-                    const cloudPrompt = promptFromCloudRow(row);
-                    if (existingIndex >= 0) appData.prompts[existingIndex] = cloudPrompt;
-                    else appData.prompts.push(cloudPrompt);
-                    localUpserts.set(id, cloudPrompt);
-                }
-                changed = true;
-            });
-
-            if (data.length < DELTA_PAGE_SIZE) break;
-        }
-
-        cloudRevision = newestRevision;
-        await persistLocalBatch({
-            upserts: [...localUpserts.values()],
-            deletes: [...localDeletes],
-            outboxPuts: [...outboxPuts.values()],
-            revision: cloudRevision
-        });
-
-        if (changed) {
-            ensureOrderField();
-            renderPrompts();
-            populateCategories();
-        }
-        setCloudState('synced', 'Synced');
-    } catch (error) {
-        console.error('Error loading from Supabase:', error);
-        setCloudState('error', 'Sync failed');
-        showToast('Cloud sync failed. Locally cached prompts remain available.');
-        throw error;
-    }
-}
-
-// Utils
-function escapeHtml(unsafe) {
-    if (!unsafe) return '';
-    return unsafe
-         .replace(/&/g, "&amp;")
-         .replace(/</g, "&lt;")
-         .replace(/>/g, "&gt;")
-         .replace(/"/g, "&quot;")
-         .replace(/'/g, "&#039;");
-}
-
-function showToast(message) {
-    let toast = document.getElementById('toast');
-    if (!toast) {
-        toast = document.createElement('div');
-        toast.id = 'toast';
-        toast.className = 'toast';
-        document.body.appendChild(toast);
-    }
-    toast.textContent = message;
-    toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), 3000);
-}
-
-// Run
-init().catch(error => {
-    console.error('Application initialization failed:', error);
-    loginError.textContent = error.message || 'The application could not start. Please refresh and try again.';
-});
+  init().catch(error => {
+    console.error('[ui] initialisation failed', error);
+    el.loginError.textContent = error.message || 'The application could not start. Please refresh.';
+  });
+})();

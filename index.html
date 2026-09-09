@@ -1,27 +1,29 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="description" content="Organize and securely sync reusable AI prompts.">
-    <meta name="theme-color" content="#f5f7fb">
+    <meta name="description" content="Organize, engineer and run reusable AI prompts.">
+    <meta name="theme-color" content="#0b1120">
     <meta name="referrer" content="no-referrer">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
-    <link rel="stylesheet" href="style.css">
+    <script>(function(){try{var p=JSON.parse(localStorage.getItem('ps.prefs.v1')||'{}');document.documentElement.setAttribute('data-theme',p.theme==='light'?'light':'dark')}catch(e){}})();</script>
+    <link rel="stylesheet" href="style.css?v=1">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha384-3B6NwesSXE7YJlcLI9RpRqGf2p/EgVH8BgoKTaUrmKNDkHPStTQ3EyoYjCGXaOTS" crossorigin="anonymous">
 </head>
 <body>
+    <!-- ── AUTH ─────────────────────────────────────────────── -->
     <section id="auth-screen" class="auth-screen">
         <div class="auth-layout">
             <div class="auth-intro" aria-hidden="true">
                 <div class="brand-mark brand-mark-large"><i class="fas fa-wand-magic-sparkles"></i></div>
-                <p class="eyebrow">Your private prompt library</p>
-                <h1>Every great prompt,<br>ready when you are.</h1>
-                <p class="auth-lead">Organize, find, and securely sync the prompts you use every day.</p>
+                <p class="eyebrow">Your private prompt workshop</p>
+                <h1>Write it once,<br>run it anywhere.</h1>
+                <p class="auth-lead">Keep the prompts you rely on, engineer new ones with a single API call, and file the results.</p>
                 <div class="auth-benefits">
-                    <span><i class="fas fa-bolt"></i> Find anything fast</span>
-                    <span><i class="fas fa-layer-group"></i> Organize your way</span>
+                    <span><i class="fas fa-layer-group"></i> Library, Workshop, Scratch</span>
+                    <span><i class="fas fa-bolt"></i> One call, one result</span>
                     <span><i class="fas fa-cloud-arrow-up"></i> Sync across devices</span>
                 </div>
             </div>
@@ -43,7 +45,7 @@
                         <label for="login-password">Password</label>
                         <input type="password" id="login-password" autocomplete="current-password" required placeholder="Enter your password">
                     </div>
-                    <button class="btn auth-submit" type="submit"><span>Sign in</span><i class="fas fa-arrow-right"></i></button>
+                    <button class="btn auth-submit" type="submit" id="login-submit"><span>Sign in</span><i class="fas fa-arrow-right"></i></button>
                     <p id="login-error" class="form-error" role="alert" aria-live="polite"></p>
                 </form>
                 <p class="auth-footnote"><i class="fas fa-lock"></i> Encrypted connection · Private workspace</p>
@@ -51,98 +53,11 @@
         </div>
     </section>
 
-    <div id="settings-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <div class="modal-content settings-dialog">
-            <div class="sheet-handle" aria-hidden="true"></div>
-            <div class="modal-heading">
-                <div>
-                    <p class="eyebrow">Account</p>
-                    <h2 id="settings-title">Cloud sync</h2>
-                </div>
-                <button class="icon-btn modal-close-icon" id="close-settings-icon" type="button" aria-label="Close settings"><i class="fas fa-xmark"></i></button>
-            </div>
-            <p class="modal-desc">Your prompts are stored in the <strong>prompts</strong> schema and protected by your Supabase account.</p>
-            <div class="settings-list">
-                <div class="account-row">
-                    <span><i class="fas fa-user"></i> Signed in as</span>
-                    <strong id="account-email"></strong>
-                </div>
-                <div class="account-row">
-                    <span><i class="fas fa-cloud"></i> Sync status</span>
-                    <strong id="cloud-status">Checking…</strong>
-                </div>
-            </div>
-            <div class="modal-actions">
-                <button class="btn btn-secondary" id="sign-out-btn" type="button"><i class="fas fa-right-from-bracket"></i> Sign out</button>
-                <button class="btn" id="close-settings-btn" type="button">Done</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="delete-modal" class="modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-title" aria-describedby="delete-description">
-        <div class="modal-content delete-dialog">
-            <div class="sheet-handle" aria-hidden="true"></div>
-            <div class="delete-icon" aria-hidden="true"><i class="fas fa-trash"></i></div>
-            <h2 id="delete-title">Delete this prompt?</h2>
-            <p class="modal-desc" id="delete-description">This removes the prompt from your library and synced devices. This action cannot be undone.</p>
-            <div class="modal-actions delete-actions">
-                <button class="btn btn-secondary" id="cancel-delete-btn" type="button">Cancel</button>
-                <button class="btn btn-danger" id="confirm-delete-btn" type="button"><i class="fas fa-trash"></i> Delete prompt</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="prompt-modal" class="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title">
-        <div class="modal-content prompt-sheet">
-            <div class="sheet-handle" aria-hidden="true"></div>
-            <div class="modal-heading prompt-sheet-heading">
-                <div>
-                    <p class="eyebrow">Prompt editor</p>
-                    <h2 id="prompt-modal-title">Add new prompt</h2>
-                </div>
-                <button class="icon-btn modal-close-icon" id="close-prompt-icon" type="button" aria-label="Close prompt editor"><i class="fas fa-xmark"></i></button>
-            </div>
-            <form id="prompt-form" class="prompt-form">
-                <div class="prompt-form-scroll">
-                    <div class="form-control">
-                        <label for="prompt-title">Title <span aria-hidden="true">*</span></label>
-                        <input type="text" id="prompt-title" required placeholder="e.g. Code Reviewer">
-                    </div>
-                    <div class="form-row">
-                        <div class="form-control flex-grow">
-                            <label for="prompt-category">Category</label>
-                            <input type="text" id="prompt-category" placeholder="e.g. Coding" list="category-list">
-                            <datalist id="category-list"></datalist>
-                        </div>
-                        <div class="form-control flex-grow">
-                            <label for="prompt-tags">Tags</label>
-                            <input type="text" id="prompt-tags" placeholder="react, debug, review">
-                        </div>
-                    </div>
-                    <div class="form-control prompt-text-control">
-                        <div class="field-label-row">
-                            <label for="prompt-text">Prompt text <span aria-hidden="true">*</span></label>
-                            <span id="editor-count" class="field-counter">0 characters</span>
-                        </div>
-                        <textarea id="prompt-text" required rows="12" placeholder="You are an expert..."></textarea>
-                    </div>
-                    <div class="form-control">
-                        <label for="prompt-notes">Notes <span class="optional-label">Optional</span></label>
-                        <textarea id="prompt-notes" rows="3" placeholder="Usage notes, model preferences, or reminders..."></textarea>
-                    </div>
-                </div>
-                <div class="modal-actions prompt-sheet-actions">
-                    <button type="button" class="btn btn-secondary" id="close-prompt-btn">Cancel</button>
-                    <button type="submit" class="btn" id="save-prompt-btn"><i class="fas fa-check"></i> Save prompt</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
+    <!-- ── APP ──────────────────────────────────────────────── -->
     <div class="app-container" id="app-container" hidden>
         <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
         <div class="app-shell">
-            <aside class="workspace-sidebar" id="workspace-sidebar" aria-label="Prompt library navigation">
+            <aside class="workspace-sidebar" id="workspace-sidebar" aria-label="Workspace navigation">
                 <div class="sidebar-header">
                     <div class="sidebar-brand">
                         <div class="brand-mark"><i class="fas fa-wand-magic-sparkles"></i></div>
@@ -154,17 +69,33 @@
                     <button class="icon-btn sidebar-close" id="sidebar-close-btn" type="button" aria-label="Close navigation"><i class="fas fa-xmark"></i></button>
                 </div>
 
-                <button class="btn sidebar-new-btn" type="button" data-open-prompt><i class="fas fa-plus"></i> New prompt</button>
+                <button class="btn sidebar-new-btn" type="button" data-open-prompt><i class="fas fa-plus"></i> <span>New prompt</span></button>
 
-                <nav class="sidebar-nav" aria-label="Library views">
-                    <p class="sidebar-label">Library</p>
-                    <button class="nav-item active" type="button" data-nav-mode="all">
-                        <span><i class="fas fa-layer-group"></i> All prompts</span>
-                        <span class="nav-count" id="all-prompts-count">0</span>
+                <nav class="sidebar-nav" aria-label="Sections">
+                    <p class="sidebar-label">Sections</p>
+                    <button class="nav-item active" type="button" data-section="library">
+                        <span><i class="fas fa-book"></i> <span class="nav-text">Library</span></span>
+                        <span class="nav-count" id="count-library">0</span>
                     </button>
+                    <button class="nav-item" type="button" data-section="workshop">
+                        <span><i class="fas fa-screwdriver-wrench"></i> <span class="nav-text">Workshop</span></span>
+                        <span class="nav-count" id="count-workshop">0</span>
+                    </button>
+                    <button class="nav-item" type="button" data-section="scratch">
+                        <span><i class="fas fa-note-sticky"></i> <span class="nav-text">Scratch</span></span>
+                        <span class="nav-count" id="count-scratch">0</span>
+                    </button>
+                    <button class="nav-item" type="button" data-section="history">
+                        <span><i class="fas fa-clock-rotate-left"></i> <span class="nav-text">History</span></span>
+                        <span class="nav-count" id="count-history">0</span>
+                    </button>
+
+                    <div class="sidebar-section-heading">
+                        <p class="sidebar-label">Filters</p>
+                    </div>
                     <button class="nav-item" type="button" data-nav-mode="pinned">
-                        <span><i class="fas fa-star"></i> Pinned</span>
-                        <span class="nav-count" id="pinned-prompts-count">0</span>
+                        <span><i class="fas fa-star"></i> <span class="nav-text">Pinned</span></span>
+                        <span class="nav-count" id="count-pinned">0</span>
                     </button>
                     <div class="sidebar-section-heading">
                         <p class="sidebar-label">Categories</p>
@@ -178,25 +109,28 @@
                         <span class="sync-summary-copy"><strong id="sidebar-sync-label">Checking…</strong><small id="sidebar-account-email">Cloud workspace</small></span>
                         <i class="fas fa-rotate"></i>
                     </button>
+                    <button class="nav-item" type="button" id="sidebar-settings-btn">
+                        <span><i class="fas fa-gear"></i> <span class="nav-text">Settings</span></span>
+                    </button>
                 </div>
             </aside>
 
             <section class="workspace-shell">
                 <header class="workspace-header">
                     <div class="header-context">
-                        <button class="icon-btn mobile-menu-btn" id="mobile-menu-btn" type="button" aria-label="Open categories"><i class="fas fa-bars"></i></button>
+                        <button class="icon-btn mobile-menu-btn" id="mobile-menu-btn" type="button" aria-label="Open navigation"><i class="fas fa-bars"></i></button>
                         <div class="context-title">
-                            <p class="eyebrow">Prompt library</p>
+                            <p class="eyebrow" id="context-eyebrow">Prompt library</p>
                             <div class="context-title-row">
-                                <h1 id="current-view-title">All prompts</h1>
+                                <h1 id="current-view-title">Library</h1>
                                 <span class="result-count" id="current-result-count">0</span>
                             </div>
                         </div>
                     </div>
 
-                    <div class="search-bar">
+                    <div class="search-bar" id="search-bar">
                         <i class="fas fa-magnifying-glass search-icon" aria-hidden="true"></i>
-                        <label class="sr-only" for="search-input">Search prompts</label>
+                        <label class="sr-only" for="search-input">Search</label>
                         <input type="search" id="search-input" placeholder="Search prompts and tags" autocomplete="off">
                         <span class="search-shortcut" aria-hidden="true">⌘K</span>
                         <button class="clear-search-btn" id="clear-search-btn" type="button" aria-label="Clear search"><i class="fas fa-times"></i></button>
@@ -208,63 +142,362 @@
                             <span id="save-state-label">Synced</span>
                         </div>
                         <button class="icon-btn" id="theme-toggle" type="button" aria-label="Toggle dark mode"><i class="fas fa-moon"></i></button>
-                        <button class="icon-btn" id="sync-btn" type="button" aria-label="Sync prompts"><i class="fas fa-cloud"></i></button>
+                        <button class="icon-btn" id="sync-btn" type="button" aria-label="Sync"><i class="fas fa-cloud"></i></button>
                         <button class="icon-btn" id="settings-btn" type="button" aria-label="Open settings"><i class="fas fa-gear"></i></button>
                     </div>
                 </header>
 
-                <div class="workspace-toolbar">
-                    <div class="mobile-filter-wrap">
-                        <label class="sr-only" for="category-filter">Filter by category</label>
-                        <select id="category-filter">
-                            <option value="">All categories</option>
-                        </select>
-                    </div>
-                    <div class="toolbar-spacer"></div>
-                    <label class="sr-only" for="sort-select">Sort prompts</label>
-                    <select id="sort-select" class="sort-select">
-                        <option value="date-desc">Newest first</option>
-                        <option value="date-asc">Oldest first</option>
-                        <option value="name-asc">Name A–Z</option>
-                        <option value="name-desc">Name Z–A</option>
-                        <option value="custom">Custom order</option>
-                    </select>
-                    <div class="view-switcher" role="group" aria-label="Prompt view">
-                        <button class="view-btn" id="view-large" data-view="large" type="button" aria-label="Card view" title="Card view"><i class="fas fa-table-cells-large"></i></button>
-                        <button class="view-btn" id="view-list" data-view="list" type="button" aria-label="List view" title="List view"><i class="fas fa-list"></i></button>
-                        <button class="view-btn" id="view-compact" data-view="compact" type="button" aria-label="Compact view" title="Compact view"><i class="fas fa-bars"></i></button>
-                    </div>
-                    <button class="btn toolbar-new-btn" id="add-prompt-btn" type="button"><i class="fas fa-plus"></i> New prompt</button>
-                </div>
-
                 <main class="workspace-content">
-                    <section class="library-panel" aria-label="Prompts">
-                        <div id="prompts-container"></div>
+
+                    <!-- LIST VIEW — shared by Library and Scratch -->
+                    <section class="view view-list-detail" id="view-list" data-view="list">
+                        <div class="workspace-toolbar">
+                            <div class="mobile-filter-wrap">
+                                <label class="sr-only" for="category-filter">Filter by category</label>
+                                <select id="category-filter">
+                                    <option value="">All categories</option>
+                                </select>
+                            </div>
+                            <div class="toolbar-spacer"></div>
+                            <label class="sr-only" for="sort-select">Sort</label>
+                            <select id="sort-select" class="sort-select">
+                                <option value="date-desc">Newest first</option>
+                                <option value="date-asc">Oldest first</option>
+                                <option value="name-asc">Name A–Z</option>
+                                <option value="name-desc">Name Z–A</option>
+                                <option value="custom">Custom order</option>
+                            </select>
+                            <div class="view-switcher" role="group" aria-label="Prompt view">
+                                <button class="view-btn" id="view-large" data-view-mode="large" type="button" aria-label="Card view" title="Card view"><i class="fas fa-table-cells-large"></i></button>
+                                <button class="view-btn" id="view-list-btn" data-view-mode="list" type="button" aria-label="List view" title="List view"><i class="fas fa-list"></i></button>
+                                <button class="view-btn" id="view-compact" data-view-mode="compact" type="button" aria-label="Compact view" title="Compact view"><i class="fas fa-bars"></i></button>
+                            </div>
+                            <button class="btn toolbar-new-btn" type="button" data-open-prompt><i class="fas fa-plus"></i> New prompt</button>
+                        </div>
+
+                        <div class="list-detail-panes">
+                            <div class="library-panel" aria-label="Prompts">
+                                <div id="prompts-container"></div>
+                            </div>
+
+                            <aside class="detail-panel" id="detail-panel" aria-label="Prompt details">
+                                <div class="detail-empty" id="detail-empty">
+                                    <div class="detail-empty-icon"><i class="fas fa-align-left"></i></div>
+                                    <h2>Select a prompt</h2>
+                                    <p>Choose a prompt to read, copy, or edit it without losing your place.</p>
+                                    <button class="btn btn-secondary" type="button" data-open-prompt><i class="fas fa-plus"></i> Create a prompt</button>
+                                </div>
+                                <div id="detail-content" class="detail-content" hidden></div>
+                            </aside>
+                        </div>
                     </section>
 
-                    <aside class="detail-panel" id="detail-panel" aria-label="Prompt details">
-                        <div class="detail-empty" id="detail-empty">
-                            <div class="detail-empty-icon"><i class="fas fa-align-left"></i></div>
-                            <h2>Select a prompt</h2>
-                            <p>Choose a prompt to read, copy, or edit it without losing your place.</p>
-                            <button class="btn btn-secondary" type="button" data-open-prompt><i class="fas fa-plus"></i> Create a prompt</button>
+                    <!-- WORKSHOP — three panes on desktop, stacked on phone -->
+                    <section class="view view-workshop" id="view-workshop" data-view="workshop" hidden>
+                        <div class="workshop-panes">
+                            <div class="workshop-pane workshop-picker">
+                                <div class="pane-head">
+                                    <h2>Meta-prompts</h2>
+                                    <button class="icon-btn" type="button" data-open-prompt data-section-hint="workshop" aria-label="New meta-prompt"><i class="fas fa-plus"></i></button>
+                                </div>
+                                <div id="workshop-list" class="workshop-list"></div>
+                            </div>
+
+                            <div class="workshop-pane workshop-input">
+                                <div class="pane-head">
+                                    <h2>Input</h2>
+                                    <span class="pane-meta" id="workshop-selected-name">No meta-prompt selected</span>
+                                </div>
+                                <div class="workshop-input-body">
+                                    <label class="sr-only" for="workshop-input">Your rough idea</label>
+                                    <textarea id="workshop-input" placeholder="Paste the rough idea, the excerpt to clean up, or the thing to summarise…"></textarea>
+                                    <div class="workshop-run-bar">
+                                        <span class="pane-meta" id="workshop-model-label">—</span>
+                                        <div class="workshop-run-actions">
+                                            <button class="btn btn-secondary" type="button" id="workshop-clear-btn">Clear</button>
+                                            <button class="btn" type="button" id="workshop-run-btn"><i class="fas fa-play"></i> Run</button>
+                                            <button class="btn btn-danger" type="button" id="workshop-stop-btn" hidden><i class="fas fa-stop"></i> Stop</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="workshop-pane workshop-output" id="workshop-output-pane">
+                                <div class="pane-head">
+                                    <button class="detail-back workshop-back" type="button" id="workshop-output-back"><i class="fas fa-chevron-left"></i> Input</button>
+                                    <h2>Output</h2>
+                                    <span class="pane-meta" id="workshop-receipt"></span>
+                                </div>
+                                <div class="workshop-output-body">
+                                    <div id="workshop-output" class="workshop-output-text" aria-live="polite"></div>
+                                </div>
+                                <div class="workshop-output-actions" id="workshop-output-actions" hidden>
+                                    <button class="btn" type="button" id="workshop-copy-btn"><i class="fas fa-copy"></i> Copy</button>
+                                    <button class="btn btn-secondary" type="button" id="workshop-save-library-btn"><i class="fas fa-book"></i> Save to Library</button>
+                                    <button class="btn btn-secondary" type="button" id="workshop-save-scratch-btn"><i class="fas fa-note-sticky"></i> Drop to Scratch</button>
+                                    <button class="btn btn-secondary" type="button" id="workshop-discard-btn">Discard</button>
+                                </div>
+                            </div>
                         </div>
-                        <div id="detail-content" class="detail-content" hidden></div>
-                    </aside>
+                    </section>
+
+                    <!-- HISTORY -->
+                    <section class="view view-history" id="view-history" data-view="history" hidden>
+                        <div class="history-toolbar">
+                            <label class="sr-only" for="history-range">Date range</label>
+                            <select id="history-range">
+                                <option value="all">All time</option>
+                                <option value="1">Last 24 hours</option>
+                                <option value="7">Last 7 days</option>
+                                <option value="30">Last 30 days</option>
+                            </select>
+                            <label class="sr-only" for="history-provider">Provider</label>
+                            <select id="history-provider">
+                                <option value="">All providers</option>
+                            </select>
+                            <label class="sr-only" for="history-status">Status</label>
+                            <select id="history-status">
+                                <option value="">All runs</option>
+                                <option value="ok">Succeeded</option>
+                                <option value="error">Failed</option>
+                            </select>
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="history-unsaved"> <span>No saved output</span>
+                            </label>
+                            <div class="toolbar-spacer"></div>
+                            <button class="btn btn-secondary" type="button" id="history-select-btn"><i class="fas fa-check-double"></i> Select</button>
+                        </div>
+
+                        <div class="history-selection-bar" id="history-selection-bar" hidden>
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="history-select-all"> <span>Select all shown</span>
+                            </label>
+                            <span class="selection-count" id="history-selection-count">0 selected</span>
+                            <div class="toolbar-spacer"></div>
+                            <button class="btn btn-secondary" type="button" id="history-cancel-select">Cancel</button>
+                            <button class="btn btn-danger" type="button" id="history-delete-btn"><i class="fas fa-trash"></i> Delete</button>
+                        </div>
+
+                        <div class="history-body">
+                            <div id="history-list" class="history-list"></div>
+                        </div>
+                    </section>
+
                 </main>
             </section>
         </div>
 
+        <button class="fab" id="fab" type="button" data-open-prompt aria-label="New prompt"><i class="fas fa-plus"></i></button>
+
         <nav class="mobile-tabbar" aria-label="Primary navigation">
-            <button class="mobile-tab active" type="button" data-mobile-action="library"><i class="fas fa-layer-group"></i><span>Library</span></button>
-            <button class="mobile-tab" type="button" data-mobile-action="pinned"><i class="fas fa-star"></i><span>Pinned</span></button>
-            <button class="mobile-tab mobile-tab-create" type="button" data-open-prompt aria-label="Create prompt"><span><i class="fas fa-plus"></i></span><small>New</small></button>
-            <button class="mobile-tab" type="button" data-mobile-action="categories"><i class="fas fa-folder"></i><span>Categories</span></button>
-            <button class="mobile-tab" type="button" data-mobile-action="settings"><i class="fas fa-gear"></i><span>Settings</span></button>
+            <button class="mobile-tab active" type="button" data-section="library"><i class="fas fa-book"></i><span>Library</span></button>
+            <button class="mobile-tab" type="button" data-section="workshop"><i class="fas fa-screwdriver-wrench"></i><span>Workshop</span></button>
+            <button class="mobile-tab" type="button" data-section="scratch"><i class="fas fa-note-sticky"></i><span>Scratch</span></button>
+            <button class="mobile-tab" type="button" data-section="history"><i class="fas fa-clock-rotate-left"></i><span>History</span></button>
         </nav>
     </div>
 
+    <!-- ── DIALOGS ──────────────────────────────────────────── -->
+
+    <dialog id="prompt-dialog" class="sheet sheet-tall" aria-labelledby="prompt-dialog-title">
+        <div class="sheet-inner">
+            <div class="sheet-handle" data-sheet-drag aria-hidden="true"></div>
+            <div class="modal-heading">
+                <div>
+                    <p class="eyebrow">Prompt editor</p>
+                    <h2 id="prompt-dialog-title">Add new prompt</h2>
+                </div>
+                <button class="icon-btn modal-close-icon" type="button" data-close-dialog aria-label="Close"><i class="fas fa-xmark"></i></button>
+            </div>
+            <form id="prompt-form" class="prompt-form" method="dialog">
+                <div class="prompt-form-scroll">
+                    <div class="form-control">
+                        <label for="prompt-title">Title <span aria-hidden="true">*</span></label>
+                        <input type="text" id="prompt-title" required placeholder="e.g. Code Reviewer">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-control flex-grow">
+                            <label for="prompt-section">Section</label>
+                            <select id="prompt-section">
+                                <option value="library">Library</option>
+                                <option value="workshop">Workshop</option>
+                                <option value="scratch">Scratch</option>
+                            </select>
+                        </div>
+                        <div class="form-control flex-grow">
+                            <label for="prompt-category">Category</label>
+                            <input type="text" id="prompt-category" placeholder="e.g. Coding" list="category-list">
+                            <datalist id="category-list"></datalist>
+                        </div>
+                    </div>
+                    <div class="form-control">
+                        <label for="prompt-tags">Tags</label>
+                        <input type="text" id="prompt-tags" placeholder="react, debug, review">
+                    </div>
+                    <div class="form-control prompt-text-control">
+                        <div class="field-label-row">
+                            <label for="prompt-text">Prompt text <span aria-hidden="true">*</span></label>
+                            <span id="editor-count" class="field-counter">0 characters</span>
+                        </div>
+                        <textarea id="prompt-text" required rows="12" placeholder="You are an expert..."></textarea>
+                        <p class="field-hint" id="workshop-hint" hidden><i class="fas fa-circle-info"></i> Workshop prompts run as the system prompt. Add <code>{{input}}</code> to place the pasted text inline instead of sending it as the user message.</p>
+                    </div>
+                    <div class="form-control">
+                        <label for="prompt-notes">Notes <span class="optional-label">Optional</span></label>
+                        <textarea id="prompt-notes" rows="3" placeholder="Usage notes, model preferences, or reminders..."></textarea>
+                    </div>
+                </div>
+                <div class="modal-actions prompt-sheet-actions">
+                    <button type="button" class="btn btn-secondary" data-close-dialog>Cancel</button>
+                    <button type="submit" class="btn" id="save-prompt-btn"><i class="fas fa-check"></i> Save prompt</button>
+                </div>
+            </form>
+        </div>
+    </dialog>
+
+    <dialog id="settings-dialog" class="sheet sheet-tall" aria-labelledby="settings-title">
+        <div class="sheet-inner">
+            <div class="sheet-handle" data-sheet-drag aria-hidden="true"></div>
+            <div class="modal-heading">
+                <div>
+                    <p class="eyebrow">Workspace</p>
+                    <h2 id="settings-title">Settings</h2>
+                </div>
+                <button class="icon-btn modal-close-icon" type="button" data-close-dialog aria-label="Close"><i class="fas fa-xmark"></i></button>
+            </div>
+
+            <div class="settings-scroll">
+                <section class="settings-group">
+                    <h3>Account</h3>
+                    <div class="account-row">
+                        <span><i class="fas fa-user"></i> Signed in as</span>
+                        <strong id="account-email"></strong>
+                    </div>
+                    <div class="account-row">
+                        <span><i class="fas fa-cloud"></i> Sync status</span>
+                        <strong id="cloud-status">Checking…</strong>
+                    </div>
+                </section>
+
+                <section class="settings-group">
+                    <h3>Model provider</h3>
+                    <p class="settings-note">Keys are stored in this browser only and are never written to Supabase. On a new device you enter them once more.</p>
+                    <div class="form-control">
+                        <label for="settings-provider">Active provider</label>
+                        <select id="settings-provider"></select>
+                    </div>
+                    <div id="provider-rows" class="provider-rows"></div>
+                    <div class="form-row">
+                        <div class="form-control flex-grow">
+                            <label for="settings-effort">Reasoning effort <span class="optional-label">Anthropic</span></label>
+                            <select id="settings-effort">
+                                <option value="">Provider default</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                                <option value="xhigh">Extra high</option>
+                                <option value="max">Max</option>
+                            </select>
+                        </div>
+                        <div class="form-control flex-grow">
+                            <label for="settings-max-tokens">Max tokens</label>
+                            <input type="number" id="settings-max-tokens" min="256" max="128000" step="256">
+                        </div>
+                    </div>
+                </section>
+
+                <section class="settings-group">
+                    <h3>Retention</h3>
+                    <p class="settings-note">Library and Workshop are never touched by any automatic process. Pinned Scratch prompts and runs marked <strong>Keep</strong> are never swept.</p>
+                    <div class="form-row">
+                        <div class="form-control flex-grow">
+                            <label for="settings-scratch-days">Scratch expires after</label>
+                            <select id="settings-scratch-days">
+                                <option value="1">1 day</option>
+                                <option value="7">7 days</option>
+                                <option value="30">30 days</option>
+                                <option value="">Keep forever</option>
+                            </select>
+                        </div>
+                        <div class="form-control flex-grow">
+                            <label for="settings-runs-days">History kept for</label>
+                            <select id="settings-runs-days">
+                                <option value="7">7 days</option>
+                                <option value="30">30 days</option>
+                                <option value="90">90 days</option>
+                                <option value="">Keep forever</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="settings-sweep">
+                        <span id="sweep-summary">Nothing is due for cleanup.</span>
+                        <button class="btn btn-secondary" type="button" id="run-sweep-btn">Clean up now</button>
+                    </div>
+                </section>
+
+                <section class="settings-group">
+                    <h3>Data</h3>
+                    <div class="settings-sweep">
+                        <span>Export every prompt as JSON.</span>
+                        <button class="btn btn-secondary" type="button" id="export-btn"><i class="fas fa-download"></i> Export</button>
+                    </div>
+                </section>
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn btn-secondary" id="sign-out-btn" type="button"><i class="fas fa-right-from-bracket"></i> Sign out</button>
+                <button class="btn" type="button" data-close-dialog>Done</button>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="sheet" aria-labelledby="confirm-title">
+        <div class="sheet-inner">
+            <div class="sheet-handle" data-sheet-drag aria-hidden="true"></div>
+            <div class="delete-icon" aria-hidden="true"><i class="fas fa-trash"></i></div>
+            <h2 id="confirm-title">Delete this prompt?</h2>
+            <p class="modal-desc" id="confirm-description">This cannot be undone.</p>
+            <div class="modal-actions delete-actions">
+                <button class="btn btn-secondary" type="button" data-close-dialog>Cancel</button>
+                <button class="btn btn-danger" id="confirm-accept-btn" type="button"><i class="fas fa-trash"></i> Delete</button>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="run-dialog" class="sheet sheet-tall" aria-labelledby="run-dialog-title">
+        <div class="sheet-inner">
+            <div class="sheet-handle" data-sheet-drag aria-hidden="true"></div>
+            <div class="modal-heading">
+                <div>
+                    <p class="eyebrow">Run receipt</p>
+                    <h2 id="run-dialog-title">Run</h2>
+                </div>
+                <button class="icon-btn modal-close-icon" type="button" data-close-dialog aria-label="Close"><i class="fas fa-xmark"></i></button>
+            </div>
+            <div class="run-detail-scroll" id="run-detail-body"></div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" type="button" id="run-copy-input">Copy input</button>
+                <button class="btn" type="button" id="run-copy-output"><i class="fas fa-copy"></i> Copy output</button>
+            </div>
+        </div>
+    </dialog>
+
+    <dialog id="palette-dialog" class="palette" aria-label="Command palette">
+        <div class="palette-inner">
+            <div class="palette-search">
+                <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+                <label class="sr-only" for="palette-input">Command</label>
+                <input type="text" id="palette-input" placeholder="Jump to a prompt, section or action…" autocomplete="off">
+            </div>
+            <div id="palette-results" class="palette-results" role="listbox"></div>
+        </div>
+    </dialog>
+
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4" integrity="sha384-yiVMs0R/Jyz7OhoXa/DsEMUSBLjEhr/QJta2ONO+zB6I8/GmNg/7AUFrZmAJV7KV" crossorigin="anonymous"></script>
-    <script src="script.js?v=7"></script>
+    <script src="./supabase-config.js?v=1"></script>
+    <script src="./settings.js?v=1"></script>
+    <script src="./cloud.js?v=1"></script>
+    <script src="./runner.js?v=1"></script>
+    <script src="./script.js?v=1"></script>
 </body>
 </html>

@@ -1,0 +1,128 @@
+name: deploy-pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Test persistence and security invariants
+        run: |
+          for f in supabase-config.js settings.js cloud.js runner.js script.js; do
+            node --check "$f"
+          done
+          node --test tests/cloud.test.mjs
+
+          grep -q "rpc('apply_prompt_changes'" cloud.js
+          grep -q 'Content-Security-Policy' index.html
+
+          # No inline event handlers: the script CSP would block them,
+          # so a stray onclick is a page that silently does nothing.
+          if grep -Eqi 'on(click|change|input|submit)=' index.html script.js; then
+            echo "Inline event handlers are blocked by the script CSP" >&2
+            exit 1
+          fi
+
+          # Design tokens only. Any raw hex after the :root/[data-theme]
+          # token block (which ends at line 68) fails the build.
+          if tail -n +69 style.css | grep -Eq '#[0-9a-fA-F]{3,8}'; then
+            echo "Raw hex outside the token block in style.css" >&2
+            tail -n +69 style.css | grep -nE '#[0-9a-fA-F]{3,8}' >&2
+            exit 1
+          fi
+
+          # Colour must come from the two explicit data-theme states,
+          # never from the OS preference.
+          if grep -q 'prefers-color-scheme' style.css; then
+            echo "prefers-color-scheme must not decide colour" >&2
+            exit 1
+          fi
+
+          # No secret may ever reach the published site. The Supabase
+          # publishable key is fine and is expected; a service-role JWT
+          # or a provider API key is not.
+          #
+          # Each pattern requires real key material, so the "sk-ant-…"
+          # placeholder in settings.js and the service_role warning in
+          # the supabase-config.js comment do not trip it.
+          if grep -rEq 'sk-ant-[A-Za-z0-9_-]{24,}|sk-proj-[A-Za-z0-9_-]{24,}|AIzaSy[A-Za-z0-9_-]{20,}|sb_secret_[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}' \
+              index.html style.css supabase-config.js settings.js cloud.js runner.js script.js; then
+            echo "A secret-looking value is present in a deployed file" >&2
+            exit 1
+          fi
+
+      - name: Verify the inline theme bootstrap matches its CSP hash
+        run: |
+          # The inline script that sets data-theme before first paint is
+          # allowed by a sha384 hash in the CSP. Editing the script
+          # without recomputing the hash leaves a page that loads but
+          # never applies the saved theme, with nothing in the diff to
+          # show why — so the build checks it.
+          node -e "
+            const fs = require('fs'), crypto = require('crypto');
+            const html = fs.readFileSync('index.html', 'utf8');
+            const m = html.match(/<script>([\s\S]*?)<\/script>/);
+            if (!m) { console.error('No inline bootstrap script found'); process.exit(1); }
+            const hash = 'sha384-' + crypto.createHash('sha384').update(m[1], 'utf8').digest('base64');
+            if (!html.includes(hash)) {
+              console.error('CSP hash does not match the inline script.');
+              console.error('Expected: ' + hash);
+              process.exit(1);
+            }
+            console.log('Inline bootstrap hash matches: ' + hash);
+          "
+
+      - name: Build Pages artifact
+        run: |
+          mkdir _site
+          cp index.html style.css supabase-config.js settings.js cloud.js runner.js script.js .nojekyll _site/
+
+          # Every file the page asks for must be in the artifact. A new
+          # file added to index.html but not to the cp list above is the
+          # failure this catches.
+          node -e "
+            const fs = require('fs');
+            const html = fs.readFileSync('_site/index.html', 'utf8');
+            const refs = [...html.matchAll(/(?:src|href)=\"\.?\/?([A-Za-z0-9_.-]+\.(?:js|css))(?:\?[^\"]*)?\"/g)]
+              .map(m => m[1]);
+            const missing = [...new Set(refs)].filter(f => !fs.existsSync('_site/' + f));
+            if (missing.length) {
+              console.error('Referenced but not copied into _site: ' + missing.join(', '));
+              process.exit(1);
+            }
+            console.log('All ' + new Set(refs).size + ' local assets present in the artifact.');
+          "
+
+          # The published config must carry real values, not placeholders.
+          if grep -q 'PUT_YOUR_' _site/supabase-config.js; then
+            echo "supabase-config.js still contains placeholders" >&2
+            exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
