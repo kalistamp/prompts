@@ -2893,3 +2893,205 @@ dialog.palette::backdrop {
 @media (max-width: 699px) {
     .history-toolbar select { flex: 1 1 calc(50% - 5px); }
 }
+
+/* ============================================================
+   VERSION HISTORY + DIFF
+   Tint colours use color-mix over the existing semantic tokens, so
+   the diff stays on-palette in both themes without new raw values.
+   ============================================================ */
+
+.versions-body {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+    gap: 14px;
+}
+
+.versions-list {
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    scrollbar-width: thin;
+}
+
+.version-item {
+    width: 100%;
+    text-align: left;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--fg);
+    cursor: pointer;
+    display: block;
+}
+
+.version-item:hover { border-color: var(--border-strong); }
+
+.version-item.is-selected {
+    border-color: var(--primary);
+    background: var(--primary-soft);
+}
+
+.version-item strong { display: block; font-size: 0.82rem; font-weight: 620; }
+.version-item span { display: block; font-size: 0.72rem; color: var(--fg-subtle); margin-top: 2px; }
+
+.versions-diff {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.diff-caption {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg-subtle);
+    margin-bottom: 10px;
+}
+
+.diff-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.diff-field {
+    display: grid;
+    grid-template-columns: 78px minmax(0, 1fr);
+    gap: 4px 10px;
+    align-items: baseline;
+    font-size: 0.8rem;
+}
+
+.diff-field > span {
+    grid-row: span 2;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--fg-subtle);
+}
+
+.diff-field del,
+.diff-field ins {
+    overflow-wrap: anywhere;
+    padding: 2px 7px;
+    border-radius: 6px;
+    text-decoration: none;
+}
+
+.diff-field del {
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.diff-field ins {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.diff-body {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-sunken);
+    overflow: hidden;
+}
+
+.diff-line {
+    display: flex;
+    gap: 8px;
+    padding: 1px 10px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.55;
+}
+
+.diff-sign {
+    flex: none;
+    width: 10px;
+    color: var(--fg-subtle);
+    user-select: none;
+}
+
+.diff-text {
+    min-width: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.diff-same { color: var(--fg-muted); }
+
+.diff-add {
+    background: color-mix(in srgb, var(--success) 14%, transparent);
+    color: var(--fg);
+}
+
+.diff-add .diff-sign { color: var(--success); }
+
+.diff-remove {
+    background: color-mix(in srgb, var(--danger) 12%, transparent);
+    color: var(--fg);
+}
+
+.diff-remove .diff-sign { color: var(--danger); }
+
+.diff-gap {
+    padding: 4px 10px;
+    font-size: 0.72rem;
+    color: var(--fg-subtle);
+    background: var(--surface-2);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+}
+
+/* ---- Import controls -------------------------------------- */
+#import-file {
+    flex: 1 1 200px;
+    min-width: 0;
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+}
+
+#import-file::file-selector-button {
+    margin-right: 10px;
+    padding: 7px 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+}
+
+#import-file::file-selector-button:hover { border-color: var(--border-strong); }
+
+#import-text {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    margin-bottom: 8px;
+}
+
+@media (max-width: 699px) {
+    .versions-body {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .versions-list {
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding-bottom: 4px;
+        max-height: 92px;
+    }
+
+    .version-item { flex: 0 0 auto; min-width: 165px; }
+
+    .diff-field { grid-template-columns: minmax(0, 1fr); }
+    .diff-field > span { grid-row: auto; }
+}

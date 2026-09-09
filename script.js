@@ -21,6 +21,7 @@
   const Cloud = window.PromptCloud;
   const Runner = window.PromptRunner;
   const Settings = window.PromptSettings;
+  const Diff = window.PromptDiff;
 
   // ─────────────────────────────────────────────
   // VIEW STATE
@@ -56,7 +57,12 @@
     pendingConfirm: null,
     pendingRunDelete: null,
     paletteIndex: 0,
-    paletteItems: []
+    paletteItems: [],
+
+    // Versions
+    versionsPromptId: null,
+    versions: [],
+    selectedVersionId: null
   };
 
   function loadCollapsed() {
@@ -189,6 +195,21 @@
     paletteDialog: $('palette-dialog'),
     paletteInput: $('palette-input'),
     paletteResults: $('palette-results'),
+
+    versionsDialog: $('versions-dialog'),
+    versionsTitle: $('versions-title'),
+    versionsList: $('versions-list'),
+    versionsDiff: $('versions-diff'),
+    versionsSummary: $('versions-summary'),
+    versionCopyBtn: $('version-copy-btn'),
+    versionRestoreBtn: $('version-restore-btn'),
+
+    importFile: $('import-file'),
+    importPasteBtn: $('import-paste-btn'),
+    importPasteWrap: $('import-paste-wrap'),
+    importText: $('import-text'),
+    importTextBtn: $('import-text-btn'),
+    importNote: $('import-note'),
 
     fab: $('fab'),
     tabbar: document.querySelector('.mobile-tabbar')
@@ -712,6 +733,7 @@
         ${prompt.section !== 'workshop'
           ? '<button class="btn btn-secondary" type="button" data-detail-action="to-workshop"><i class="fas fa-screwdriver-wrench"></i> Move to Workshop</button>'
           : '<button class="btn btn-secondary" type="button" data-detail-action="use"><i class="fas fa-play"></i> Use in Workshop</button>'}
+        <button class="icon-btn" type="button" data-detail-action="versions" aria-label="Version history" title="Version history"><i class="fas fa-clock-rotate-left"></i></button>
         <button class="icon-btn" type="button" data-detail-action="edit" aria-label="Edit"><i class="fas fa-pen"></i></button>
         <button class="icon-btn danger" type="button" data-detail-action="delete" aria-label="Delete"><i class="fas fa-trash"></i></button>
       </div>`;
@@ -782,9 +804,18 @@
     return days === null ? null : Date.now() + days * 86400000;
   }
 
-  function savePrompt(prompt) {
+  /* `previous` is the state before this edit. When it is supplied and
+     the content actually changed, a snapshot is filed for the version
+     history. Pin, reorder and expiry changes pass nothing, so a drag
+     or a star never buries the real edits. The snapshot is fire and
+     forget — it must never delay or block the save itself. */
+  function savePrompt(prompt, previous) {
     Cloud.upsertPromptLocal(prompt);
     Cloud.savePrompts([prompt]);
+    if (previous) {
+      Cloud.recordVersion(previous, prompt)
+        .catch(error => console.error('[ui] could not record version', error));
+    }
   }
 
   function togglePin(id) {
@@ -812,6 +843,11 @@
       onConfirm: () => {
         Cloud.removePromptLocal(id);
         Cloud.savePrompts([], [{ id, deletedAt: Date.now(), revision: prompt.revision || 0 }]);
+        // prompt_items deletes are tombstones, so no database cascade
+        // reaches the version snapshots. Clear them here or they
+        // outlive the prompt they belong to.
+        Cloud.deleteVersionsFor(id)
+          .catch(error => console.error('[ui] could not clear versions', error));
         state.expandedIds.delete(id);
         if (state.selectedPromptId === id) {
           state.selectedPromptId = null;
@@ -826,10 +862,11 @@
   function movePromptToSection(id, section) {
     const prompt = Cloud.getPrompts().find(p => p.id === id);
     if (!prompt) return;
+    const previous = { ...prompt };
     prompt.section = section;
     prompt.expiresAt = section === 'scratch' ? scratchExpiry() : null;
     prompt.updatedAt = Date.now();
-    savePrompt(prompt);
+    savePrompt(prompt, previous);
     render();
     showToast(`Moved to ${SECTION_META[section].title}.`);
   }
@@ -879,9 +916,15 @@
     };
 
     let saved;
+    let previous = null;
     if (editState.editing) {
       const existing = Cloud.getPrompts().find(p => p.id === editState.id);
       if (!existing) return;
+      // Copied before the spread below, because `existing` is the
+      // live object in the store and upsertPromptLocal is about to
+      // replace it — the pre-edit state has to be captured here or
+      // it is gone by the time the version is written.
+      previous = { ...existing };
       saved = { ...existing, ...data };
       // Entering Scratch starts the clock; leaving it clears the clock.
       if (section === 'scratch' && !existing.expiresAt) saved.expiresAt = scratchExpiry();
@@ -900,7 +943,7 @@
       };
     }
 
-    savePrompt(saved);
+    savePrompt(saved, previous);
     state.selectedPromptId = saved.id;
     closeDialog(el.promptDialog);
 
@@ -1523,6 +1566,236 @@
   }
 
   // ─────────────────────────────────────────────
+  // VERSION HISTORY
+  // ─────────────────────────────────────────────
+
+  function openVersions(promptId) {
+    const prompt = Cloud.getPrompts().find(p => p.id === promptId);
+    if (!prompt) return;
+
+    state.versionsPromptId = promptId;
+    state.versions = [];
+    state.selectedVersionId = null;
+    el.versionsTitle.textContent = prompt.title || 'Versions';
+    el.versionsList.innerHTML = '<p class="palette-empty">Loading…</p>';
+    el.versionsDiff.innerHTML = '';
+    el.versionsSummary.textContent = '';
+    openDialog(el.versionsDialog);
+
+    Cloud.listVersions(promptId)
+      .then(versions => {
+        if (state.versionsPromptId !== promptId) return;
+        state.versions = versions;
+        state.selectedVersionId = versions.length ? versions[0].id : null;
+        renderVersions();
+      })
+      .catch(error => {
+        console.error('[ui] could not load versions', error);
+        el.versionsList.innerHTML = '<p class="palette-empty">Could not load version history.</p>';
+      });
+  }
+
+  function renderVersions() {
+    const prompt = Cloud.getPrompts().find(p => p.id === state.versionsPromptId);
+    const hasVersions = state.versions.length > 0;
+    el.versionCopyBtn.disabled = !hasVersions;
+    el.versionRestoreBtn.disabled = !hasVersions;
+
+    if (!hasVersions) {
+      el.versionsList.innerHTML =
+        '<p class="palette-empty">No earlier versions yet. One is filed each time you change this prompt&rsquo;s content.</p>';
+      el.versionsDiff.innerHTML = '';
+      el.versionsSummary.textContent = '';
+      return;
+    }
+
+    el.versionsList.innerHTML = '';
+    state.versions.forEach((version, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'version-item' + (version.id === state.selectedVersionId ? ' is-selected' : '');
+      button.dataset.versionId = version.id;
+
+      const when = document.createElement('strong');
+      when.textContent = formatDateTime(version.createdAt);
+      const meta = document.createElement('span');
+      const changed = prompt ? Cloud.contentChanged(version, prompt) : true;
+      meta.textContent = index === 0
+        ? (changed ? 'Previous version' : 'Same as current')
+        : `${index + 1} versions back`;
+
+      button.appendChild(when);
+      button.appendChild(meta);
+      el.versionsList.appendChild(button);
+    });
+
+    renderVersionDiff();
+  }
+
+  function renderVersionDiff() {
+    const prompt = Cloud.getPrompts().find(p => p.id === state.versionsPromptId);
+    const version = state.versions.find(v => v.id === state.selectedVersionId);
+    if (!prompt || !version) { el.versionsDiff.innerHTML = ''; return; }
+
+    const rows = Diff.diffLines(version.text, prompt.text);
+    const summary = Diff.summarise(rows);
+    const shown = Diff.collapse(rows);
+
+    const fieldRows = [];
+    const compare = (label, before, after) => {
+      if (String(before || '') !== String(after || '')) {
+        fieldRows.push(
+          `<div class="diff-field"><span>${escapeHtml(label)}</span>` +
+          `<del>${escapeHtml(before || '(empty)')}</del>` +
+          `<ins>${escapeHtml(after || '(empty)')}</ins></div>`
+        );
+      }
+    };
+    compare('Title', version.title, prompt.title);
+    compare('Section', version.section, prompt.section);
+    compare('Category', version.category, prompt.category);
+    compare('Tags', (version.tags || []).join(', '), (prompt.tags || []).join(', '));
+    compare('Notes', version.notes, prompt.notes);
+
+    const body = shown.map(row => {
+      if (row.type === 'gap') {
+        return `<div class="diff-gap">${escapeHtml(row.text)}</div>`;
+      }
+      const sign = row.type === 'add' ? '+' : row.type === 'remove' ? '−' : ' ';
+      return `<div class="diff-line diff-${row.type}"><span class="diff-sign">${sign}</span>` +
+             `<span class="diff-text">${escapeHtml(row.text) || '&nbsp;'}</span></div>`;
+    }).join('');
+
+    el.versionsDiff.innerHTML =
+      `<p class="diff-caption">This version <span aria-hidden="true">&rarr;</span> current</p>` +
+      (fieldRows.length ? `<div class="diff-fields">${fieldRows.join('')}</div>` : '') +
+      (summary.changed
+        ? `<div class="diff-body">${body}</div>`
+        : '<p class="palette-empty">The prompt text is identical.</p>');
+
+    el.versionsSummary.textContent = summary.changed
+      ? `${summary.added} added · ${summary.removed} removed`
+      : 'No text changes';
+  }
+
+  el.versionsList.addEventListener('click', event => {
+    const button = event.target.closest('[data-version-id]');
+    if (!button) return;
+    state.selectedVersionId = Number(button.dataset.versionId);
+    renderVersions();
+  });
+
+  el.versionCopyBtn.addEventListener('click', () => {
+    const version = state.versions.find(v => v.id === state.selectedVersionId);
+    if (version) copyText(version.text, 'Version copied.');
+  });
+
+  el.versionRestoreBtn.addEventListener('click', () => {
+    const prompt = Cloud.getPrompts().find(p => p.id === state.versionsPromptId);
+    const version = state.versions.find(v => v.id === state.selectedVersionId);
+    if (!prompt || !version) return;
+
+    confirmAction({
+      title: 'Restore this version?',
+      description: `“${prompt.title}” goes back to how it was on ${formatDateTime(version.createdAt)}. The current version is filed in the history first, so this is reversible.`,
+      confirmLabel: 'Restore',
+      onConfirm: () => {
+        // Snapshot the current state before overwriting it, so a
+        // restore can itself be undone by restoring the version this
+        // creates. Without it, restoring would be the one edit in the
+        // app that loses work.
+        const previous = { ...prompt };
+        prompt.title = version.title;
+        prompt.text = version.text;
+        prompt.category = version.category;
+        prompt.tags = (version.tags || []).slice();
+        prompt.notes = version.notes;
+        prompt.section = version.section;
+        prompt.expiresAt = version.section === 'scratch' ? (prompt.expiresAt || scratchExpiry()) : null;
+        prompt.updatedAt = Date.now();
+
+        savePrompt(prompt, previous);
+        closeDialog(el.versionsDialog);
+        render();
+        showToast('Version restored.');
+      }
+    });
+  });
+
+  el.versionsDialog.addEventListener('close', () => {
+    state.versionsPromptId = null;
+    state.versions = [];
+    state.selectedVersionId = null;
+  });
+
+  // ─────────────────────────────────────────────
+  // IMPORT
+  // ─────────────────────────────────────────────
+
+  function setImportNote(message, kind) {
+    el.importNote.className = 'provider-test-note' + (kind ? ` is-${kind}` : '');
+    el.importNote.textContent = message;
+  }
+
+  /* Parse first, state the counts, then write — same contract as
+     every other bulk action here. Nothing lands until the confirm
+     sheet has said exactly how many prompts are coming in and how
+     many were already present. */
+  function beginImport(rawText, sourceLabel) {
+    let parsed;
+    try {
+      parsed = Cloud.parseImport(rawText);
+    } catch (error) {
+      setImportNote(error.message, 'error');
+      return;
+    }
+
+    if (!parsed.fresh.length && !parsed.duplicates.length) {
+      setImportNote(`Nothing importable in ${sourceLabel}. ${parsed.skipped} entries were unusable.`, 'error');
+      return;
+    }
+
+    const parts = [`${parsed.fresh.length} new ${parsed.fresh.length === 1 ? 'prompt' : 'prompts'} will be added.`];
+    if (parsed.duplicates.length) {
+      parts.push(`${parsed.duplicates.length} already exist and will be skipped — existing prompts are never overwritten.`);
+    }
+    if (parsed.skipped) parts.push(`${parsed.skipped} entries were unusable and will be ignored.`);
+
+    confirmAction({
+      title: `Import ${parsed.fresh.length} ${parsed.fresh.length === 1 ? 'prompt' : 'prompts'}?`,
+      description: parts.join(' '),
+      confirmLabel: `Import ${parsed.fresh.length}`,
+      onConfirm: () => {
+        const added = Cloud.applyImport(parsed, 'skip');
+        setImportNote(`Imported ${added} ${added === 1 ? 'prompt' : 'prompts'}.`, 'ok');
+        showToast(`Imported ${added} ${added === 1 ? 'prompt' : 'prompts'}.`);
+        render();
+      }
+    });
+  }
+
+  el.importFile.addEventListener('change', () => {
+    const file = el.importFile.files && el.importFile.files[0];
+    if (!file) return;
+    setImportNote('Reading…');
+    file.text()
+      .then(text => beginImport(text, file.name))
+      .catch(() => setImportNote('That file could not be read.', 'error'))
+      .finally(() => { el.importFile.value = ''; });
+  });
+
+  el.importPasteBtn.addEventListener('click', () => {
+    el.importPasteWrap.hidden = !el.importPasteWrap.hidden;
+    if (!el.importPasteWrap.hidden) el.importText.focus();
+  });
+
+  el.importTextBtn.addEventListener('click', () => {
+    const text = el.importText.value.trim();
+    if (!text) { setImportNote('Paste some JSON first.', 'error'); return; }
+    beginImport(text, 'the pasted JSON');
+  });
+
+  // ─────────────────────────────────────────────
   // COMMAND PALETTE
   // ─────────────────────────────────────────────
 
@@ -1772,7 +2045,8 @@
       edit: () => openPromptEditor(id),
       delete: () => deletePrompt(id),
       'to-workshop': () => movePromptToSection(id, 'workshop'),
-      use: () => { state.metaPromptId = id; setSection('workshop'); }
+      use: () => { state.metaPromptId = id; setSection('workshop'); },
+      versions: () => openVersions(id)
     };
     const action = actions[button.dataset.detailAction];
     if (action) action();

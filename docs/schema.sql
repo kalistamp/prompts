@@ -9,17 +9,29 @@
 --
 -- Idempotent: safe to run more than once.
 --
--- Everything lives in the `prompts` schema of the shared project.
--- The same auth.users account signs in to Docket, Lists, Daily,
--- Hut and Prompts — this is another schema, not another login.
+-- THIS UPGRADES THE EXISTING `prompts` SCHEMA. It does not create a
+-- schema and must never be able to. The shared project keeps one
+-- schema per app — prompts, hut, lists, doc, daily — and a second
+-- one appearing here would be a silent fork of the live data rather
+-- than an upgrade of it. The guard below stops the script dead if
+-- the schema is missing, instead of helpfully conjuring an empty one.
+--
+-- It also leaves the schema-level grants alone. `usage` for
+-- `authenticated` and the revoke for `anon` are already in place —
+-- the app could not sign in otherwise — and re-issuing them here
+-- would mean this migration silently altering live privileges it was
+-- never asked to touch. To confirm the existing posture:
+--
+--   select nspname, nspacl from pg_namespace where nspname = 'prompts';
 -- ============================================================
 
-create schema if not exists prompts;
-
--- `anon` is revoked from the schema itself, not merely the tables,
--- so the publishable key can only be used to attempt a sign-in.
-revoke all on schema prompts from anon;
-grant usage on schema prompts to authenticated;
+do $$
+begin
+  if not exists (select 1 from pg_namespace where nspname = 'prompts') then
+    raise exception
+      'Schema "prompts" does not exist. This script upgrades it and will not create it.';
+  end if;
+end $$;
 
 
 -- ------------------------------------------------------------
@@ -58,15 +70,17 @@ create index if not exists prompt_items_user_revision_idx
 create index if not exists prompt_items_user_section_idx
   on prompts.prompt_items (user_id, section);
 
-alter table prompts.prompt_items enable row level security;
-
-drop policy if exists prompt_items_owner on prompts.prompt_items;
-create policy prompt_items_owner on prompts.prompt_items
-  for all to authenticated
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
-
-grant select, insert, update, delete on prompts.prompt_items to authenticated;
+-- RLS, the owner policy and the table grants on prompt_items are
+-- deliberately NOT touched. They are already live and working; the
+-- v1 app has been reading and writing through them for months.
+-- Re-issuing them would either replace a policy whose exact shape
+-- this script cannot see, or add a second permissive one beside it.
+-- Adding columns needs neither. To confirm what is there:
+--
+--   select polname, polcmd, pg_get_expr(polqual, polrelid) as using_expr
+--     from pg_policy where polrelid = 'prompts.prompt_items'::regclass;
+--   select relrowsecurity from pg_class
+--     where oid = 'prompts.prompt_items'::regclass;
 
 
 -- ------------------------------------------------------------
@@ -165,6 +179,33 @@ grant select, insert, update, delete on prompts.user_settings to authenticated;
 --
 -- Raises PROMPT_VERSION_CONFLICT when a row moved underneath the
 -- caller; the client force-pulls, rebases its outbox and retries.
+
+-- CREATE OR REPLACE only replaces a function with the SAME argument
+-- types. If the live one takes anything other than a single `jsonb`
+-- (a `jsonb[]`, say), the statement below would add a second overload
+-- beside it rather than replacing it, and PostgREST would then have
+-- two candidates for one RPC name — an ambiguity error at best, the
+-- wrong function at worst. Drop every overload of this one name
+-- first, so what follows is the only definition.
+--
+-- To see what is there before running this:
+--   select oid::regprocedure from pg_proc
+--    where pronamespace = 'prompts'::regnamespace
+--      and proname = 'apply_prompt_changes';
+do $$
+declare
+  signature text;
+begin
+  for signature in
+    select oid::regprocedure::text from pg_proc
+     where pronamespace = 'prompts'::regnamespace
+       and proname = 'apply_prompt_changes'
+  loop
+    execute 'drop function ' || signature;
+    raise notice 'Dropped previous overload: %', signature;
+  end loop;
+end $$;
+
 create or replace function prompts.apply_prompt_changes(changes jsonb)
 returns table (prompt_id int8, new_revision int8)
 language plpgsql
@@ -309,7 +350,54 @@ grant execute on function prompts.apply_prompt_changes(jsonb) to authenticated;
 
 
 -- ------------------------------------------------------------
--- 5. prompt_data — the dead v1 table
+-- 5. prompt_versions — snapshots for diff and restore
+-- ------------------------------------------------------------
+
+-- One row per superseded version of a prompt's CONTENT. Written by
+-- the client immediately before an edit overwrites the old body, so
+-- `created_at` is the moment the version stopped being current.
+--
+-- Only content changes are snapshotted — title, text, category, tags,
+-- notes, section. Pinning, reordering and expiry changes are not
+-- versions of anything and would otherwise bury the real edits.
+--
+-- Like prompt_runs this skips the outbox and the revision cursor: a
+-- snapshot is a plain insert, and losing one while offline costs a
+-- history entry, never the prompt itself.
+--
+-- There is deliberately no foreign key to prompt_items. Deletes there
+-- are tombstones rather than row removals, so a cascade would never
+-- fire; the client deletes a prompt's versions alongside it instead.
+create table if not exists prompts.prompt_versions (
+  user_id     uuid not null references auth.users(id) on delete cascade,
+  id          int8 not null,
+  prompt_id   int8 not null,
+  title       text not null default '',
+  prompt_text text not null default '',
+  category    text not null default '',
+  tags        text[] not null default '{}',
+  notes       text not null default '',
+  section     text not null default 'library',
+  created_at  int8 not null,
+  primary key (user_id, id)
+);
+
+create index if not exists prompt_versions_user_prompt_idx
+  on prompts.prompt_versions (user_id, prompt_id, created_at desc);
+
+alter table prompts.prompt_versions enable row level security;
+
+drop policy if exists prompt_versions_owner on prompts.prompt_versions;
+create policy prompt_versions_owner on prompts.prompt_versions
+  for all to authenticated
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid());
+
+grant select, insert, update, delete on prompts.prompt_versions to authenticated;
+
+
+-- ------------------------------------------------------------
+-- 6. prompt_data — the dead v1 table
 -- ------------------------------------------------------------
 -- The whole-document jsonb store from the Gist era. The v1 client
 -- referenced it zero times and v2 does not touch it. Confirm it is

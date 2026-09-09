@@ -28,7 +28,7 @@ jobs:
 
       - name: Test persistence and security invariants
         run: |
-          for f in supabase-config.js settings.js cloud.js runner.js script.js; do
+          for f in supabase-config.js settings.js cloud.js diff.js runner.js script.js; do
             node --check "$f"
           done
           node --test tests/cloud.test.mjs
@@ -66,7 +66,7 @@ jobs:
           # placeholder in settings.js and the service_role warning in
           # the supabase-config.js comment do not trip it.
           if grep -rEq 'sk-ant-[A-Za-z0-9_-]{24,}|sk-proj-[A-Za-z0-9_-]{24,}|AIzaSy[A-Za-z0-9_-]{20,}|sb_secret_[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}' \
-              index.html style.css supabase-config.js settings.js cloud.js runner.js script.js; then
+              index.html style.css supabase-config.js settings.js cloud.js diff.js runner.js script.js; then
             echo "A secret-looking value is present in a deployed file" >&2
             exit 1
           fi
@@ -95,7 +95,7 @@ jobs:
       - name: Build Pages artifact
         run: |
           mkdir _site
-          cp index.html style.css supabase-config.js settings.js cloud.js runner.js script.js .nojekyll _site/
+          cp index.html style.css supabase-config.js settings.js cloud.js diff.js runner.js script.js .nojekyll _site/
 
           # Every file the page asks for must be in the artifact. A new
           # file added to index.html but not to the cp list above is the

@@ -128,9 +128,10 @@
   function readCredentials() {
     const saved = read(CRED_KEY, {});
 
-    // v1 of this app kept Gist credentials. If an install still
-    // carries them, drop them rather than leaving a stale GitHub
-    // token sitting in storage forever.
+    // The pre-Supabase version of this app stored a GitHub token to
+    // sync through a Gist. That sync is long gone, but a browser that
+    // used it may still carry the credentials — drop them rather than
+    // leaving a stale token sitting in storage forever.
     if (Object.prototype.hasOwnProperty.call(saved, 'githubToken') ||
         Object.prototype.hasOwnProperty.call(saved, 'gistId')) {
       delete saved.githubToken;

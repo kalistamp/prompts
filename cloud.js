@@ -51,6 +51,11 @@
     'keep', 'saved_prompt_id', 'created_at'
   ].join(',');
 
+  const VERSION_COLUMNS = [
+    'id', 'prompt_id', 'title', 'prompt_text', 'category', 'tags', 'notes',
+    'section', 'created_at'
+  ].join(',');
+
   const SECTIONS = ['library', 'workshop', 'scratch'];
 
   // Mirrors the CHECK constraint on prompt_items.section. A value no
@@ -854,6 +859,226 @@
   }
 
   // ─────────────────────────────────────────────
+  // VERSIONS
+  // ─────────────────────────────────────────────
+
+  /* A snapshot of a prompt's content taken immediately BEFORE an edit
+     overwrites it, so `created_at` is the moment that version stopped
+     being current.
+
+     Only content counts. Pinning, reordering and expiry changes are
+     not versions of anything, and snapshotting them would bury the
+     real edits under noise from a drag or a star. */
+  const VERSION_FIELDS = ['title', 'text', 'category', 'notes', 'section'];
+  const MAX_VERSIONS_PER_PROMPT = 20;
+
+  function contentChanged(previous, next) {
+    if (!previous || !next) return false;
+    if (VERSION_FIELDS.some(field => String(previous[field] || '') !== String(next[field] || ''))) {
+      return true;
+    }
+    const before = (previous.tags || []).join(' ');
+    const after = (next.tags || []).join(' ');
+    return before !== after;
+  }
+
+  function versionFromRow(row) {
+    return {
+      id: Number(row.id),
+      promptId: Number(row.prompt_id),
+      title: String(row.title || ''),
+      text: String(row.prompt_text || ''),
+      category: String(row.category || ''),
+      tags: Array.isArray(row.tags) ? row.tags.map(String) : [],
+      notes: String(row.notes || ''),
+      section: safeSection(row.section),
+      createdAt: Number(row.created_at) || 0
+    };
+  }
+
+  function versionToRow(prompt, userId, id, createdAt) {
+    return {
+      user_id: userId,
+      id,
+      prompt_id: Number(prompt.id),
+      title: String(prompt.title || ''),
+      prompt_text: String(prompt.text || ''),
+      category: String(prompt.category || ''),
+      tags: prompt.tags || [],
+      notes: String(prompt.notes || ''),
+      section: safeSection(prompt.section),
+      created_at: createdAt
+    };
+  }
+
+  /**
+   * Snapshot `previous` if `next` changes its content. Returns the
+   * stored version, or null when nothing worth recording happened.
+   *
+   * Online-only, like runs: losing a snapshot while offline costs a
+   * history entry, never the prompt itself, so this never blocks or
+   * queues the save that follows it.
+   */
+  async function recordVersion(previous, next) {
+    if (!currentUser || !contentChanged(previous, next)) return null;
+    const c = client();
+    if (!c) return null;
+
+    const id = newId();
+    const row = versionToRow(previous, currentUser.id, id, Date.now());
+    const { error } = await c.from('prompt_versions').insert(row);
+    if (error) throw error;
+
+    void pruneVersions(previous.id).catch(e => console.error('[cloud] version prune failed', e));
+    return versionFromRow(row);
+  }
+
+  async function listVersions(promptId) {
+    const c = client();
+    if (!c || !currentUser) return [];
+    const id = toNum(promptId);
+    if (id === null) return [];
+    const { data, error } = await c
+      .from('prompt_versions')
+      .select(VERSION_COLUMNS)
+      .eq('user_id', currentUser.id)
+      .eq('prompt_id', id)
+      .order('created_at', { ascending: false })
+      .limit(MAX_VERSIONS_PER_PROMPT + 10);
+    if (error) throw error;
+    return (data || []).map(versionFromRow);
+  }
+
+  // Keeps the newest MAX_VERSIONS_PER_PROMPT and drops the rest, so a
+  // heavily edited prompt cannot grow an unbounded tail.
+  async function pruneVersions(promptId) {
+    const c = client();
+    if (!c || !currentUser) return 0;
+    const id = toNum(promptId);
+    if (id === null) return 0;
+
+    const { data, error } = await c
+      .from('prompt_versions')
+      .select('id')
+      .eq('user_id', currentUser.id)
+      .eq('prompt_id', id)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+
+    const doomed = (data || []).slice(MAX_VERSIONS_PER_PROMPT)
+      .map(row => toNum(row.id)).filter(n => n !== null);
+    if (!doomed.length) return 0;
+
+    const { error: deleteError } = await c.from('prompt_versions').delete()
+      .eq('user_id', currentUser.id).in('id', doomed);
+    if (deleteError) throw deleteError;
+    return doomed.length;
+  }
+
+  /* Called when a prompt is deleted. prompt_items rows are tombstoned
+     rather than removed, so no database cascade can do this. */
+  async function deleteVersionsFor(promptId) {
+    const c = client();
+    if (!c || !currentUser) return 0;
+    const id = toNum(promptId);
+    if (id === null) return 0;
+    const { error } = await c.from('prompt_versions').delete()
+      .eq('user_id', currentUser.id).eq('prompt_id', id);
+    if (error) throw error;
+    return 1;
+  }
+
+  // ─────────────────────────────────────────────
+  // IMPORT
+  // ─────────────────────────────────────────────
+
+  /* Accepts three shapes without asking which one you have:
+
+       · a v2 export        { exportedAt, prompts: [...] }
+       · a whole-document   { prompts: [...], deleted: [...] }
+       · a bare array       [ ... ]
+
+     Anything without a section lands in Library — the same default
+     the column takes — so a backup taken before sections existed
+     imports without needing to be edited first.
+
+     This only READS the file; nothing is written until the caller
+     confirms a count. */
+  function parseImport(raw) {
+    let source = raw;
+    if (typeof raw === 'string') {
+      try { source = JSON.parse(raw); } catch (e) {
+        throw new Error('That file is not valid JSON.');
+      }
+    }
+
+    const list = Array.isArray(source) ? source
+      : (source && Array.isArray(source.prompts) ? source.prompts : null);
+    if (!list) throw new Error('No prompts found in that file.');
+
+    const existing = new Set(prompts.map(p => p.id));
+    const seen = new Set();
+    const fresh = [];
+    const duplicates = [];
+    let skipped = 0;
+
+    list.forEach(entry => {
+      const candidate = entry && typeof entry === 'object' ? entry : null;
+      if (!candidate) { skipped += 1; return; }
+
+      // A legacy row keys its body as `text`; tolerate `prompt_text`
+      // too, so a raw table export also imports.
+      const normalized = normalizePrompt({
+        ...candidate,
+        text: candidate.text !== undefined ? candidate.text : candidate.prompt_text,
+        order: candidate.order !== undefined ? candidate.order : candidate.sort_order
+      });
+      if (!normalized || (!normalized.title && !normalized.text)) { skipped += 1; return; }
+
+      if (existing.has(normalized.id) || seen.has(normalized.id)) {
+        duplicates.push(normalized);
+        return;
+      }
+      seen.add(normalized.id);
+      fresh.push(normalized);
+    });
+
+    return { fresh, duplicates, skipped, total: list.length };
+  }
+
+  /**
+   * Writes the parsed prompts through the normal save path, so they
+   * pick up the outbox, the revision check and the sync exactly like
+   * anything else typed into the editor.
+   *
+   * `mode` is 'skip' (leave existing prompts alone) or 'copy' (bring
+   * duplicates in under fresh ids). There is no overwrite mode: an
+   * import should never be able to destroy a prompt you already have.
+   */
+  function applyImport(parsed, mode = 'skip') {
+    const incoming = parsed.fresh.slice();
+
+    if (mode === 'copy') {
+      parsed.duplicates.forEach(prompt => {
+        const id = newId();
+        incoming.push(normalizePrompt({
+          ...prompt,
+          id,
+          createdAt: id,
+          order: id,
+          revision: 0,
+          title: `${prompt.title} (imported)`
+        }));
+      });
+    }
+
+    if (!incoming.length) return 0;
+    incoming.forEach(prompt => upsertPromptLocal(prompt));
+    savePrompts(incoming);
+    return incoming.length;
+  }
+
+  // ─────────────────────────────────────────────
   // SETTINGS
   // ─────────────────────────────────────────────
 
@@ -1032,6 +1257,14 @@
     updateRun,
     deleteRuns,
     saveSettings,
+
+    recordVersion,
+    listVersions,
+    deleteVersionsFor,
+    contentChanged,
+    parseImport,
+    applyImport,
+    MAX_VERSIONS_PER_PROMPT,
 
     sweepCandidates,
     runSweep,

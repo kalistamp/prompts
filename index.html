@@ -441,6 +441,18 @@
                         <span>Export every prompt as JSON.</span>
                         <button class="btn btn-secondary" type="button" id="export-btn"><i class="fas fa-download"></i> Export</button>
                     </div>
+                    <p class="settings-note">Import a JSON export from this app, a backup taken before sections existed, or a raw table dump. Existing prompts are never overwritten.</p>
+                    <div class="settings-sweep">
+                        <label class="sr-only" for="import-file">Import file</label>
+                        <input type="file" id="import-file" accept="application/json,.json">
+                        <button class="btn btn-secondary" type="button" id="import-paste-btn"><i class="fas fa-paste"></i> Paste instead</button>
+                    </div>
+                    <div class="form-control" id="import-paste-wrap" hidden>
+                        <label for="import-text">Paste the JSON</label>
+                        <textarea id="import-text" rows="5" placeholder='{"prompts": [ ... ]}'></textarea>
+                        <button class="btn btn-secondary" type="button" id="import-text-btn">Read this JSON</button>
+                    </div>
+                    <p class="provider-test-note" id="import-note"></p>
                 </section>
             </div>
 
@@ -482,6 +494,28 @@
         </div>
     </dialog>
 
+    <dialog id="versions-dialog" class="sheet sheet-tall" aria-labelledby="versions-title">
+        <div class="sheet-inner">
+            <div class="sheet-handle" data-sheet-drag aria-hidden="true"></div>
+            <div class="modal-heading">
+                <div>
+                    <p class="eyebrow">Version history</p>
+                    <h2 id="versions-title">Versions</h2>
+                </div>
+                <button class="icon-btn modal-close-icon" type="button" data-close-dialog aria-label="Close"><i class="fas fa-xmark"></i></button>
+            </div>
+            <div class="versions-body">
+                <div class="versions-list" id="versions-list"></div>
+                <div class="versions-diff" id="versions-diff"></div>
+            </div>
+            <div class="modal-actions">
+                <span class="pane-meta" id="versions-summary"></span>
+                <button class="btn btn-secondary" type="button" id="version-copy-btn"><i class="fas fa-copy"></i> Copy this version</button>
+                <button class="btn" type="button" id="version-restore-btn"><i class="fas fa-clock-rotate-left"></i> Restore</button>
+            </div>
+        </div>
+    </dialog>
+
     <dialog id="palette-dialog" class="palette" aria-label="Command palette">
         <div class="palette-inner">
             <div class="palette-search">
@@ -497,6 +531,7 @@
     <script src="./supabase-config.js?v=1"></script>
     <script src="./settings.js?v=1"></script>
     <script src="./cloud.js?v=1"></script>
+    <script src="./diff.js?v=1"></script>
     <script src="./runner.js?v=1"></script>
     <script src="./script.js?v=1"></script>
 </body>

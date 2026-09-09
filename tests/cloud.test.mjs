@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises';
 
 const settingsSource = await readFile(new URL('../settings.js', import.meta.url), 'utf8');
 const cloudSource = await readFile(new URL('../cloud.js', import.meta.url), 'utf8');
+const diffSource = await readFile(new URL('../diff.js', import.meta.url), 'utf8');
 const runnerSource = await readFile(new URL('../runner.js', import.meta.url), 'utf8');
 
 /* Values created inside the vm carry that realm's prototypes, which
@@ -35,7 +36,7 @@ function harness() {
     window,
     localStorage,
     console: { warn: (...a) => logs.push(a), error: (...a) => logs.push(a), log() {} },
-    Date, Set, Map, Promise, JSON, Number, Boolean, String, Array, Object, Math,
+    Date, Set, Map, Promise, JSON, Number, Boolean, String, Array, Object, Math, Uint32Array,
     Blob, TextDecoder, URL, URLSearchParams, fetch,
     setTimeout, clearTimeout, structuredClone,
     indexedDB: undefined
@@ -43,12 +44,14 @@ function harness() {
 
   vm.runInNewContext(settingsSource, context);
   vm.runInNewContext(cloudSource, context);
+  vm.runInNewContext(diffSource, context);
   vm.runInNewContext(runnerSource, context);
 
   return {
     Settings: window.PromptSettings,
     Cloud: window.PromptCloud,
     Runner: window.PromptRunner,
+    Diff: window.PromptDiff,
     store,
     logs
   };
@@ -104,7 +107,7 @@ test('model catalog stores a fingerprint, not the key', () => {
     'the raw key must never be written into the model cache');
 });
 
-test('legacy Gist credentials are dropped on read', () => {
+test('credentials left by the pre-Supabase version are dropped on read', () => {
   const { Settings, store } = harness();
   store.set('ps.credentials.v1', JSON.stringify({
     provider: 'anthropic', githubToken: 'ghp_leftover', gistId: 'abc123'
@@ -315,4 +318,190 @@ test('an unknown model prices at zero and says so', () => {
   const { costUsd, priced } = Runner.costFor('some-other-model', 1000, 1000);
   assert.equal(costUsd, 0);
   assert.equal(priced, false, 'the run records that it could not be priced rather than guessing');
+});
+
+// ─────────────────────────────────────────────
+// DIFF
+// ─────────────────────────────────────────────
+
+test('identical text produces no changes', () => {
+  const { Diff } = harness();
+  const rows = Diff.diffLines('a\nb\nc', 'a\nb\nc');
+  assert.equal(rows.every(r => r.type === 'same'), true);
+  assert.deepEqual(plain(Diff.summarise(rows)), { added: 0, removed: 0, changed: false });
+});
+
+test('a diff keeps the unchanged lines and marks the edits', () => {
+  const { Diff } = harness();
+  const rows = plain(Diff.diffLines('one\ntwo\nthree', 'one\nTWO\nthree'));
+  assert.deepEqual(rows, [
+    { type: 'same', text: 'one' },
+    { type: 'remove', text: 'two' },
+    { type: 'add', text: 'TWO' },
+    { type: 'same', text: 'three' }
+  ]);
+  assert.deepEqual(plain(Diff.summarise(rows)), { added: 1, removed: 1, changed: true });
+});
+
+test('pure insertion removes nothing', () => {
+  const { Diff } = harness();
+  const summary = Diff.summarise(Diff.diffLines('a\nb', 'a\nmiddle\nb'));
+  assert.equal(summary.added, 1);
+  assert.equal(summary.removed, 0);
+});
+
+test('pure deletion adds nothing', () => {
+  const { Diff } = harness();
+  const summary = Diff.summarise(Diff.diffLines('a\ngone\nb', 'a\nb'));
+  assert.equal(summary.added, 0);
+  assert.equal(summary.removed, 1);
+});
+
+test('empty on both sides is a single unchanged blank line', () => {
+  const { Diff } = harness();
+  assert.deepEqual(plain(Diff.diffLines('', '')), [{ type: 'same', text: '' }]);
+  assert.deepEqual(plain(Diff.diffLines(null, undefined)), [{ type: 'same', text: '' }]);
+});
+
+test('collapse hides long unchanged runs but keeps context', () => {
+  const { Diff } = harness();
+  const before = Array.from({ length: 30 }, (_, i) => `line ${i}`).join('\n');
+  const after = before.replace('line 15', 'CHANGED');
+  const collapsed = plain(Diff.collapse(Diff.diffLines(before, after), 2));
+
+  assert.ok(collapsed.some(r => r.type === 'gap'), 'a gap marker stands in for the skipped lines');
+  assert.ok(collapsed.some(r => r.type === 'add' && r.text === 'CHANGED'));
+  assert.ok(collapsed.length < 20, `collapsed to ${collapsed.length} rows`);
+});
+
+test('an oversized comparison degrades instead of building a huge table', () => {
+  const { Diff } = harness();
+  // Past MAX_CELLS the LCS table would be tens of millions of cells,
+  // so the whole body is reported as replaced rather than hanging.
+  const lines = Math.ceil(Math.sqrt(Diff.MAX_CELLS)) + 10;
+  const before = new Array(lines).fill('x').join('\n');
+  const after = new Array(lines).fill('y').join('\n');
+  const rows = Diff.diffLines(before, after);
+  assert.equal(rows.filter(r => r.type === 'same').length, 0);
+  assert.equal(rows.filter(r => r.type === 'remove').length, lines);
+  assert.equal(rows.filter(r => r.type === 'add').length, lines);
+});
+
+// ─────────────────────────────────────────────
+// VERSIONS — what counts as a change
+// ─────────────────────────────────────────────
+
+test('content edits are versioned', () => {
+  const { Cloud } = harness();
+  const base = Cloud.normalizePrompt({ id: 1, title: 'A', text: 'body', tags: ['x'], section: 'library' });
+  const edit = field => Cloud.contentChanged(base, Cloud.normalizePrompt({ ...base, ...field }));
+
+  assert.equal(edit({ title: 'B' }), true);
+  assert.equal(edit({ text: 'other' }), true);
+  assert.equal(edit({ category: 'New' }), true);
+  assert.equal(edit({ notes: 'note' }), true);
+  assert.equal(edit({ section: 'workshop' }), true);
+  assert.equal(edit({ tags: ['x', 'y'] }), true);
+});
+
+test('pinning, reordering and expiry are not versions', () => {
+  const { Cloud } = harness();
+  const base = Cloud.normalizePrompt({ id: 1, title: 'A', text: 'body', tags: ['x'] });
+  const edit = field => Cloud.contentChanged(base, Cloud.normalizePrompt({ ...base, ...field }));
+
+  // Otherwise a drag or a star would bury the real edits.
+  assert.equal(edit({ pinned: true }), false);
+  assert.equal(edit({ order: 999 }), false);
+  assert.equal(edit({ expiresAt: Date.now() }), false);
+  assert.equal(edit({ updatedAt: Date.now() + 1 }), false);
+  assert.equal(edit({}), false);
+});
+
+// ─────────────────────────────────────────────
+// IMPORT
+// ─────────────────────────────────────────────
+
+test('an export from this app imports', () => {
+  const { Cloud } = harness();
+  const parsed = Cloud.parseImport(JSON.stringify({
+    exportedAt: '2026-09-08T00:00:00Z',
+    prompts: [
+      { id: 1, title: 'One', text: 'a', section: 'workshop' },
+      { id: 2, title: 'Two', text: 'b', section: 'scratch' }
+    ]
+  }));
+  assert.equal(parsed.fresh.length, 2);
+  assert.equal(parsed.duplicates.length, 0);
+  assert.equal(parsed.skipped, 0);
+  assert.equal(parsed.fresh[0].section, 'workshop');
+});
+
+test('a whole-document backup and a bare array both import', () => {
+  const { Cloud } = harness();
+  const doc = Cloud.parseImport({ prompts: [{ id: 5, title: 'X', text: 'x' }], deleted: [] });
+  assert.equal(doc.fresh.length, 1);
+  // A backup from before sections existed lands in Library, the same
+  // default the column takes.
+  assert.equal(doc.fresh[0].section, 'library');
+
+  const bare = Cloud.parseImport([{ id: 6, title: 'Y', text: 'y' }]);
+  assert.equal(bare.fresh.length, 1);
+});
+
+test('a raw table dump maps prompt_text and sort_order', () => {
+  const { Cloud } = harness();
+  const parsed = Cloud.parseImport([{ id: 9, title: 'Row', prompt_text: 'from column', sort_order: 42 }]);
+  assert.equal(parsed.fresh[0].text, 'from column');
+  assert.equal(parsed.fresh[0].order, 42);
+});
+
+test('prompts already present are reported, never overwritten', () => {
+  const { Cloud } = harness();
+  Cloud.upsertPromptLocal({ id: 1, title: 'Mine', text: 'original' });
+
+  const parsed = Cloud.parseImport([
+    { id: 1, title: 'Theirs', text: 'replacement' },
+    { id: 2, title: 'New', text: 'fresh' }
+  ]);
+  assert.equal(parsed.fresh.length, 1);
+  assert.equal(parsed.duplicates.length, 1);
+
+  Cloud.applyImport(parsed, 'skip');
+  const mine = Cloud.getPrompts().find(p => p.id === 1);
+  assert.equal(mine.title, 'Mine', 'the existing prompt is untouched');
+  assert.equal(mine.text, 'original');
+  assert.equal(Cloud.getPrompts().length, 2);
+});
+
+test('copy mode brings duplicates in under fresh ids', () => {
+  const { Cloud } = harness();
+  Cloud.upsertPromptLocal({ id: 1, title: 'Mine', text: 'original' });
+  const parsed = Cloud.parseImport([{ id: 1, title: 'Theirs', text: 'replacement' }]);
+
+  Cloud.applyImport(parsed, 'copy');
+  const all = Cloud.getPrompts();
+  assert.equal(all.length, 2);
+  assert.equal(all.find(p => p.id === 1).text, 'original', 'the original still wins its id');
+  const copy = all.find(p => p.id !== 1);
+  assert.equal(copy.title, 'Theirs (imported)');
+});
+
+test('unusable entries are counted, not imported', () => {
+  const { Cloud } = harness();
+  const parsed = Cloud.parseImport([
+    { id: 1, title: 'Good', text: 'yes' },
+    { id: 2 },                    // no title and no body
+    { title: 'No id', text: 'x' },
+    null,
+    'not an object'
+  ]);
+  assert.equal(parsed.fresh.length, 1);
+  assert.equal(parsed.skipped, 4);
+  assert.equal(parsed.total, 5);
+});
+
+test('a file that is not prompts is refused with a readable message', () => {
+  const { Cloud } = harness();
+  assert.throws(() => Cloud.parseImport('{ not json'), /not valid JSON/);
+  assert.throws(() => Cloud.parseImport({ something: 'else' }), /No prompts found/);
 });
