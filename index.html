@@ -9,7 +9,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.mistral.ai https://api.cohere.com https://router.huggingface.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
     <script>(function(){try{var p=JSON.parse(localStorage.getItem('ps.prefs.v1')||'{}');document.documentElement.setAttribute('data-theme',p.theme==='light'?'light':'dark')}catch(e){}})();</script>
-    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="stylesheet" href="style.css?v=5">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha384-3B6NwesSXE7YJlcLI9RpRqGf2p/EgVH8BgoKTaUrmKNDkHPStTQ3EyoYjCGXaOTS" crossorigin="anonymous">
 </head>
 <body>
@@ -206,6 +206,7 @@
                             <div class="workshop-pane workshop-input">
                                 <div class="pane-head">
                                     <h2>Input</h2>
+                                    <button class="ghost-btn" type="button" id="view-prompt-btn" title="Read the full meta-prompt"><i class="fas fa-up-right-and-down-left-from-center"></i> View full prompt</button>
                                     <span class="pane-meta" id="workshop-selected-name">No meta-prompt selected</span>
                                 </div>
                                 <div class="workshop-input-body">
@@ -230,8 +231,12 @@
                                 <div class="pane-head">
                                     <button class="detail-back workshop-back" type="button" id="workshop-output-back"><i class="fas fa-chevron-left"></i> Input</button>
                                     <h2>Output</h2>
-                                    <span class="pane-meta" id="workshop-receipt"></span>
+                                    <div class="mode-switch" role="group" aria-label="Output format">
+                                        <button class="mode-btn" type="button" data-output-mode="markdown">Formatted</button>
+                                        <button class="mode-btn" type="button" data-output-mode="raw">Raw</button>
+                                    </div>
                                 </div>
+                                <p class="pane-receipt" id="workshop-receipt"></p>
                                 <div class="workshop-output-body">
                                     <div id="workshop-output" class="workshop-output-text" aria-live="polite"></div>
                                 </div>
@@ -529,6 +534,29 @@
         </div>
     </dialog>
 
+    <dialog id="prompt-view-dialog" class="sheet sheet-tall" aria-labelledby="prompt-view-title">
+        <div class="sheet-inner">
+            <div class="sheet-handle" data-sheet-drag aria-hidden="true"></div>
+            <div class="modal-heading">
+                <div>
+                    <p class="eyebrow">Meta-prompt</p>
+                    <h2 id="prompt-view-title">Full prompt</h2>
+                </div>
+                <div class="mode-switch" role="group" aria-label="Prompt format">
+                    <button class="mode-btn" type="button" data-prompt-mode="markdown">Formatted</button>
+                    <button class="mode-btn" type="button" data-prompt-mode="raw">Raw</button>
+                </div>
+                <button class="icon-btn modal-close-icon" type="button" data-close-dialog aria-label="Close"><i class="fas fa-xmark"></i></button>
+            </div>
+            <p class="settings-note" id="prompt-view-note"></p>
+            <div class="prompt-view-body" id="prompt-view-body"></div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" type="button" id="prompt-view-edit"><i class="fas fa-pen"></i> Edit this prompt</button>
+                <button class="btn" type="button" id="prompt-view-copy"><i class="fas fa-copy"></i> Copy</button>
+            </div>
+        </div>
+    </dialog>
+
     <dialog id="palette-dialog" class="palette" aria-label="Command palette">
         <div class="palette-inner">
             <div class="palette-search">
@@ -541,11 +569,12 @@
     </dialog>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4" integrity="sha384-yiVMs0R/Jyz7OhoXa/DsEMUSBLjEhr/QJta2ONO+zB6I8/GmNg/7AUFrZmAJV7KV" crossorigin="anonymous"></script>
-    <script src="./supabase-config.js?v=4"></script>
-    <script src="./settings.js?v=4"></script>
-    <script src="./cloud.js?v=4"></script>
-    <script src="./diff.js?v=4"></script>
-    <script src="./runner.js?v=4"></script>
-    <script src="./script.js?v=4"></script>
+    <script src="./supabase-config.js?v=5"></script>
+    <script src="./settings.js?v=5"></script>
+    <script src="./cloud.js?v=5"></script>
+    <script src="./diff.js?v=5"></script>
+    <script src="./markdown.js?v=5"></script>
+    <script src="./runner.js?v=5"></script>
+    <script src="./script.js?v=5"></script>
 </body>
 </html>

@@ -45,6 +45,13 @@
     running: false,
     abortController: null,
     lastRun: null,
+    // The exchange: system prompt plus alternating turns.
+    thread: null,
+    outputMode: prefs.outputMode,
+
+    // Full prompt viewer
+    promptView: null,
+    promptViewMode: 'markdown',
 
     // History
     selectMode: false,
@@ -149,6 +156,13 @@
     workshopRefineBtn: $('workshop-refine-btn'),
     workshopRestartBtn: $('workshop-restart-btn'),
     workshopTurnCount: $('workshop-turn-count'),
+    viewPromptBtn: $('view-prompt-btn'),
+    promptViewDialog: $('prompt-view-dialog'),
+    promptViewTitle: $('prompt-view-title'),
+    promptViewNote: $('prompt-view-note'),
+    promptViewBody: $('prompt-view-body'),
+    promptViewCopy: $('prompt-view-copy'),
+    promptViewEdit: $('prompt-view-edit'),
 
     historyRange: $('history-range'),
     historyProvider: $('history-provider'),
@@ -1236,6 +1250,99 @@
      it from a since-edited meta-prompt mid-exchange would silently
      change the rules the earlier turns were answered under. */
 
+  // ─────────────────────────────────────────────
+  // OUTPUT FORMATTING
+  // ─────────────────────────────────────────────
+
+  /* Model output is Markdown far more often than not — headings,
+     numbered steps, fenced code — and reading it as one wall of
+     monospace throws all of that away.
+
+     Rendering is safe to do on text the model wrote because
+     markdown.js escapes every character of the source before it
+     parses anything, and the only tags in the result are the ones it
+     builds itself. Raw HTML in the output shows up as the characters
+     that were typed, and a link is only followed if its scheme is
+     http, https or mailto. That property is the whole reason this
+     renderer is reused instead of a CDN one. */
+  function paintText(container, text, mode) {
+    container.textContent = '';
+    const raw = String(text || '');
+
+    if (mode === 'markdown' && window.PromptMarkdown) {
+      container.className = 'turn-text is-rendered';
+      container.innerHTML = window.PromptMarkdown.render(raw);
+      decorateCodeBlocks(container, raw);
+      return;
+    }
+    container.className = 'turn-text';
+    container.textContent = raw;
+  }
+
+  /* A copy button per fenced block. The model's answer is frequently a
+     prompt or a snippet meant to be lifted whole, and selecting it by
+     hand out of a scrolling pane is the fiddliest part of using this. */
+  function decorateCodeBlocks(container) {
+    container.querySelectorAll('pre').forEach(pre => {
+      if (pre.querySelector('.code-copy')) return;
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'code-copy';
+      button.textContent = 'Copy';
+      button.addEventListener('click', () => {
+        const code = pre.querySelector('code');
+        copyText(code ? code.textContent : pre.textContent, 'Code copied.');
+      });
+      pre.appendChild(button);
+    });
+  }
+
+  function setOutputMode(mode) {
+    state.outputMode = mode === 'raw' ? 'raw' : 'markdown';
+    Settings.writePrefs({ outputMode: state.outputMode });
+    document.querySelectorAll('[data-output-mode]').forEach(button => {
+      const active = button.dataset.outputMode === state.outputMode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    renderThread();
+  }
+
+  // ─────────────────────────────────────────────
+  // FULL PROMPT VIEWER
+  // ─────────────────────────────────────────────
+
+  /* The meta-prompt pane shows the first line and a scrollbar, which
+     is no way to read a prompt of any length. This opens the whole
+     thing — the assembled system message, exactly as it will be sent,
+     not the stored text — so what you read is what runs. */
+  function openPromptView() {
+    const meta = Cloud.getPrompts().find(p => p.id === state.metaPromptId);
+    if (!meta) { showToast('Pick a meta-prompt first.'); return; }
+
+    const assembled = Runner.assemble(meta.text, el.workshopInput.value);
+    state.promptView = { title: meta.title, text: assembled.system, id: meta.id };
+
+    el.promptViewTitle.textContent = meta.title;
+    el.promptViewNote.textContent = assembled.interpolated
+      ? 'Your input has been substituted at {{input}}. This is the exact system message that will be sent.'
+      : 'This is the exact system message that will be sent. Your input goes in a separate user message.';
+
+    renderPromptView();
+    openDialog(el.promptViewDialog);
+  }
+
+  function renderPromptView() {
+    if (!state.promptView) return;
+    paintText(el.promptViewBody, state.promptView.text, state.promptViewMode);
+    el.promptViewBody.classList.add('prompt-view-body');
+    document.querySelectorAll('[data-prompt-mode]').forEach(button => {
+      const active = button.dataset.promptMode === state.promptViewMode;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+  }
+
   function startThread(meta, input) {
     const assembled = Runner.assemble(meta.text, input);
     state.thread = {
@@ -1273,8 +1380,14 @@
       label.className = 'turn-label';
       label.textContent = turn.role === 'user' ? 'You asked for a change' : 'Model';
       const text = document.createElement('div');
-      text.className = 'turn-text';
-      text.textContent = turn.content;
+      // Your own refinements stay plain — they are a sentence you
+      // typed, not a document, and rendering them would be noise.
+      if (turn.role === 'assistant') {
+        paintText(text, turn.content, state.outputMode);
+      } else {
+        text.className = 'turn-text';
+        text.textContent = turn.content;
+      }
       block.appendChild(label);
       block.appendChild(text);
       el.workshopOutput.appendChild(block);
@@ -2327,6 +2440,31 @@
   el.workshopOutputBack.addEventListener('click', () => {
     el.workshopOutputPane.classList.remove('is-open');
   });
+  document.querySelectorAll('[data-output-mode]').forEach(button => {
+    button.addEventListener('click', () => setOutputMode(button.dataset.outputMode));
+  });
+
+  document.querySelectorAll('[data-prompt-mode]').forEach(button => {
+    button.addEventListener('click', () => {
+      state.promptViewMode = button.dataset.promptMode;
+      renderPromptView();
+    });
+  });
+
+  el.viewPromptBtn.addEventListener('click', openPromptView);
+
+  el.promptViewCopy.addEventListener('click', () => {
+    // Always the source text, never the rendered HTML.
+    if (state.promptView) copyText(state.promptView.text, 'Prompt copied.');
+  });
+
+  el.promptViewEdit.addEventListener('click', () => {
+    if (!state.promptView) return;
+    const id = state.promptView.id;
+    closeDialog(el.promptViewDialog);
+    openPromptEditor(id);
+  });
+
   el.workshopRefineBtn.addEventListener('click', () => {
     const text = el.workshopRefineInput.value.trim();
     if (!text) { el.workshopRefineInput.focus(); return; }
@@ -2349,6 +2487,7 @@
   });
 
   el.workshopCopyBtn.addEventListener('click', () => {
+    // The raw Markdown source, not the rendered HTML.
     if (state.lastRun) copyText(state.lastRun.output, 'Output copied.');
   });
   el.workshopSaveLibraryBtn.addEventListener('click', () => saveRunOutput('library'));
@@ -2773,6 +2912,7 @@
     applyTheme(prefs.theme);
     el.sortSelect.value = state.sort;
     updateViewButtons();
+    setOutputMode(state.outputMode);
     el.clearSearchBtn.style.display = 'none';
 
     if (!window.supabase) {

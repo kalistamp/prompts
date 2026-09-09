@@ -133,7 +133,9 @@
     theme: 'dark',          // v2 is dark by default
     view: 'large',
     sort: 'date-desc',
-    section: 'library'
+    section: 'library',
+    // Model output is Markdown far more often than not.
+    outputMode: 'markdown'
   });
 
   // ─────────────────────────────────────────────
@@ -298,7 +300,8 @@
       sort: ['date-desc', 'date-asc', 'name-asc', 'name-desc', 'custom'].includes(saved.sort)
         ? saved.sort : DEFAULT_PREFS.sort,
       section: ['library', 'workshop', 'scratch', 'history'].includes(saved.section)
-        ? saved.section : DEFAULT_PREFS.section
+        ? saved.section : DEFAULT_PREFS.section,
+      outputMode: saved.outputMode === 'raw' ? 'raw' : DEFAULT_PREFS.outputMode
     };
   }
 
