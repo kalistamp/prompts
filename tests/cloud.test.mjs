@@ -557,3 +557,40 @@ test('no element is looked up and then never used', async () => {
 
   assert.deepEqual(unused, [], 'these elements are looked up but never used');
 });
+
+// ─────────────────────────────────────────────
+// SOURCE HYGIENE
+// ─────────────────────────────────────────────
+
+test('no source file contains a NUL byte', async () => {
+  /* A stray NUL makes git treat the file as binary — no diffs, no
+     review — and hides whatever it is sitting inside. One reached
+     cloud.js as a tag separator and went unnoticed precisely because
+     the file stopped producing readable diffs. */
+  const files = [
+    'index.html', 'style.css', 'supabase-config.js', 'settings.js',
+    'cloud.js', 'diff.js', 'runner.js', 'script.js', 'docs/schema.sql'
+  ];
+  const dirty = [];
+  for (const name of files) {
+    const bytes = await readFile(new URL(`../${name}`, import.meta.url));
+    if (bytes.includes(0)) dirty.push(name);
+  }
+  assert.deepEqual(dirty, []);
+});
+
+test('tags that differ only by grouping count as a change', () => {
+  const { Cloud } = harness();
+  const base = Cloud.normalizePrompt({ id: 1, title: 'A', text: 'b', tags: ['a b'] });
+  const split = Cloud.normalizePrompt({ id: 1, title: 'A', text: 'b', tags: ['a', 'b'] });
+
+  /* Joining tags with a separator renders both of these as "a b", so
+     editing one into the other would read as no change and the
+     version would never be filed. The earlier test used a single tag
+     and passed without ever exercising the separator. */
+  assert.equal(Cloud.contentChanged(base, split), true);
+  assert.equal(Cloud.contentChanged(split, base), true);
+
+  const same = Cloud.normalizePrompt({ id: 1, title: 'A', text: 'b', tags: ['a', 'b'] });
+  assert.equal(Cloud.contentChanged(split, same), false);
+});

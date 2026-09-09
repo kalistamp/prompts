@@ -121,8 +121,16 @@
     });
   }
 
-  function setStatus(state, message) {
-    emit('status', { state, message });
+  function setStatus(state, message, detail) {
+    emit('status', { state, message, detail: detail || '' });
+  }
+
+  function describeError(error) {
+    if (!error) return '';
+    const parts = [error.message, error.details, error.hint]
+      .map(p => String(p || '').trim()).filter(Boolean);
+    const seen = new Set();
+    return parts.filter(p => (seen.has(p) ? false : seen.add(p))).join(' — ');
   }
 
   // ─────────────────────────────────────────────
@@ -671,7 +679,7 @@
         return true;
       }
       console.error('[cloud] save failed', error);
-      setStatus('error', 'Sync failed');
+      setStatus('error', 'Sync failed', describeError(error));
       return false;
     }
   }
@@ -769,7 +777,7 @@
       setStatus('synced', 'Synced');
     } catch (error) {
       console.error('[cloud] pull failed', error);
-      setStatus('error', 'Sync failed');
+      setStatus('error', 'Sync failed', describeError(error));
       throw error;
     }
   }
@@ -877,9 +885,10 @@
     if (VERSION_FIELDS.some(field => String(previous[field] || '') !== String(next[field] || ''))) {
       return true;
     }
-    const before = (previous.tags || []).join(' ');
-    const after = (next.tags || []).join(' ');
-    return before !== after;
+    // JSON rather than a joined string: with a separator, the tags
+    // ['a b'] and ['a', 'b'] render identically and a real edit
+    // between them would read as no change.
+    return JSON.stringify(previous.tags || []) !== JSON.stringify(next.tags || []);
   }
 
   function versionFromRow(row) {

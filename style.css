@@ -2535,6 +2535,11 @@ dialog.palette {
     max-width: 100vw;
     max-height: 100dvh;
     color: var(--fg);
+    /* The UA centres a modal dialog with margin:auto inside inset:0.
+       The universal reset at the top of this sheet sets margin:0 on
+       every element, which silently overrides that and pins the
+       dialog to the top-left corner. Put the centring back. */
+    margin: auto;
 }
 
 dialog.sheet::backdrop,
@@ -2815,7 +2820,9 @@ dialog.palette::backdrop {
     body.section-history .fab { display: none; }
 
     /* Sheets become bottom sheets. */
-    dialog.sheet { align-self: end; margin-bottom: 0; }
+    /* Bottom sheet: auto on top pushes it down, 0 on the
+       bottom holds it against the edge. */
+    dialog.sheet { margin-block: auto 0; }
 
     .sheet-inner,
     .sheet-tall .sheet-inner {
@@ -2842,7 +2849,7 @@ dialog.palette::backdrop {
         cursor: grab;
     }
 
-    dialog.palette { align-self: start; }
+    dialog.palette { margin-block: 0 auto; }
     .palette-inner { width: 100vw; max-width: 100vw; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
 
     .modal-actions { flex-wrap: wrap; }

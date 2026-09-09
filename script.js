@@ -2334,7 +2334,17 @@
   // SYNC STATUS
   // ─────────────────────────────────────────────
 
-  Cloud.on('status', ({ state: syncState, message }) => {
+  // Only the first occurrence of a given failure is surfaced, so a
+  // retry loop cannot bury the screen in identical toasts.
+  let lastSyncProblem = '';
+
+  Cloud.on('status', ({ state: syncState, message, detail }) => {
+    if (syncState === 'error' && detail && detail !== lastSyncProblem) {
+      lastSyncProblem = detail;
+      showToast(detail);
+      console.error('[ui] sync problem:', detail);
+    }
+    if (syncState === 'synced') lastSyncProblem = '';
     const icons = {
       syncing: '<i class="fas fa-spinner fa-spin"></i>',
       synced: '<i class="fas fa-check"></i>',

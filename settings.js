@@ -48,6 +48,15 @@
      provider returns for the entered key, so it reflects what the
      key can actually reach rather than what this file was written
      believing. */
+  /* The nine providers that are reachable straight from a browser.
+     Defaults and key URLs match the ones already in use in sc, so a
+     key that works there works here without being re-chosen.
+
+     Two vendors are deliberately absent, for reasons sc records after
+     hitting both: Cloudflare Workers AI and NVIDIA NIM answer no CORS
+     headers, so no browser can reach them without a proxy this app
+     does not have; and GitHub Models was retired 2026-07-30 and now
+     answers 410 permanently. */
   const PROVIDERS = Object.freeze({
     anthropic: {
       label: 'Anthropic Claude',
@@ -60,16 +69,58 @@
     },
     openai: {
       label: 'OpenAI',
-      defaultModel: 'gpt-5.6',
+      defaultModel: 'gpt-5.6-luna',
       placeholder: 'sk-…',
       keysUrl: 'https://platform.openai.com/api-keys',
       supportsEffort: false
     },
     gemini: {
       label: 'Google Gemini',
-      defaultModel: 'gemini-3-pro',
+      defaultModel: 'gemini-3.6-flash',
       placeholder: 'AIza…',
       keysUrl: 'https://aistudio.google.com/apikey',
+      supportsEffort: false
+    },
+    groq: {
+      label: 'Groq',
+      defaultModel: 'llama-3.3-70b-versatile',
+      placeholder: 'gsk_…',
+      keysUrl: 'https://console.groq.com/keys',
+      supportsEffort: false
+    },
+    cerebras: {
+      label: 'Cerebras',
+      defaultModel: 'llama-3.3-70b',
+      placeholder: 'csk-…',
+      keysUrl: 'https://cloud.cerebras.ai/platform/apikeys',
+      supportsEffort: false
+    },
+    openrouter: {
+      label: 'OpenRouter',
+      defaultModel: 'openai/gpt-4.1-mini',
+      placeholder: 'sk-or-…',
+      keysUrl: 'https://openrouter.ai/keys',
+      supportsEffort: false
+    },
+    mistral: {
+      label: 'Mistral AI',
+      defaultModel: 'mistral-large-latest',
+      placeholder: 'API key',
+      keysUrl: 'https://console.mistral.ai/api-keys',
+      supportsEffort: false
+    },
+    cohere: {
+      label: 'Cohere',
+      defaultModel: 'command-a-03-2025',
+      placeholder: 'API key',
+      keysUrl: 'https://dashboard.cohere.com/api-keys',
+      supportsEffort: false
+    },
+    huggingface: {
+      label: 'Hugging Face',
+      defaultModel: 'openai/gpt-oss-120b',
+      placeholder: 'hf_…',
+      keysUrl: 'https://huggingface.co/settings/tokens',
       supportsEffort: false
     }
   });

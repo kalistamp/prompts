@@ -53,10 +53,20 @@
     'claude-haiku-4-5':  { in: 1,  out: 5  }
   });
 
+  // Anthropic streams token by token; the rest are single-shot and
+  // deliver their text in one onDelta at the end. The caller sees one
+  // interface either way, and this says where streaming is real so the
+  // UI never promises it falsely.
   const PROVIDER_META = Object.freeze({
-    anthropic: { streams: true },
-    openai:    { streams: false },
-    gemini:    { streams: false }
+    anthropic:   { streams: true },
+    openai:      { streams: false },
+    gemini:      { streams: false },
+    groq:        { streams: false },
+    cerebras:    { streams: false },
+    openrouter:  { streams: false },
+    mistral:     { streams: false },
+    cohere:      { streams: false },
+    huggingface: { streams: false }
   });
 
   /* Models that rejected `thinking` or `output_config` are recorded
@@ -429,14 +439,150 @@
   }
 
   // ─────────────────────────────────────────────
+  // OPENAI-COMPATIBLE GATEWAYS  (single-shot)
+  // ─────────────────────────────────────────────
+
+  /* Five providers speak OpenAI's /chat/completions verbatim, so one
+     adapter serves them all and each entry is only what differs: the
+     base URL and how that vendor lists its models. Kept apart from
+     the `openai` adapter above on purpose — that one talks to
+     /v1/responses, which none of these do. */
+  const GATEWAYS = {
+    groq:        { base: 'https://api.groq.com/openai/v1' },
+    cerebras:    { base: 'https://api.cerebras.ai/v1' },
+    openrouter:  { base: 'https://openrouter.ai/api/v1' },
+    mistral:     { base: 'https://api.mistral.ai/v1', listUsesCapabilities: true },
+    huggingface: { base: 'https://router.huggingface.co/v1' }
+  };
+
+  // Non-chat endpoints, keyed on the job rather than the family name,
+  // so an "-instruct" chat model is kept.
+  const NOT_TEXT = /embed|whisper|tts|audio|image|vision-encoder|rerank|moderation|ocr/i;
+
+  function gatewayCall(providerId) {
+    const gateway = GATEWAYS[providerId];
+    return async function call({ apiKey, model, system, user, maxTokens, signal, onDelta }) {
+      const messages = [];
+      if (system) messages.push({ role: 'system', content: system });
+      messages.push({ role: 'user', content: user || '(no additional input)' });
+
+      const response = await fetch(`${gateway.base}/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
+        signal
+      });
+      if (!response.ok) {
+        throw classify(S.PROVIDERS[providerId].label, response.status, await readError(response));
+      }
+      const payload = await response.json();
+
+      const choice = (payload.choices || [])[0] || {};
+      const text = (choice.message && choice.message.content) || '';
+      const usage = payload.usage || {};
+
+      if (onDelta && text) onDelta(text);
+      return {
+        text,
+        servedModel: payload.model || model,
+        responseId: payload.id || '',
+        inputTokens: Number(usage.prompt_tokens) || 0,
+        outputTokens: Number(usage.completion_tokens) || 0
+      };
+    };
+  }
+
+  function gatewayModels(providerId) {
+    const gateway = GATEWAYS[providerId];
+    return async function models(apiKey, signal) {
+      const response = await fetch(`${gateway.base}/models`, {
+        headers: { Authorization: `Bearer ${apiKey}` }, signal
+      });
+      if (!response.ok) {
+        throw classify(S.PROVIDERS[providerId].label, response.status, await readError(response));
+      }
+      const payload = await response.json();
+      let rows = (payload.data || []).filter(entry => entry && entry.id);
+
+      // Mistral publishes per-model capability flags, so its embedding,
+      // OCR and moderation models are dropped on the vendor's own say-so.
+      if (gateway.listUsesCapabilities) {
+        rows = rows.filter(entry => !entry.capabilities || entry.capabilities.completion_chat !== false);
+      }
+      const usable = rows.filter(entry => !NOT_TEXT.test(entry.id));
+      return (usable.length ? usable : rows).map(entry => String(entry.id));
+    };
+  }
+
+  // ─────────────────────────────────────────────
+  // COHERE  (single-shot)
+  // ─────────────────────────────────────────────
+
+  /* Cohere borrows OpenAI's request shape but not its reply: /v2/chat
+     returns a single `message` whose text arrives as content blocks,
+     and its token counts sit one level deeper under usage.tokens. */
+  async function callCohere({ apiKey, model, system, user, maxTokens, signal, onDelta }) {
+    const messages = [];
+    if (system) messages.push({ role: 'system', content: system });
+    messages.push({ role: 'user', content: user || '(no additional input)' });
+
+    const response = await fetch('https://api.cohere.com/v2/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
+      signal
+    });
+    if (!response.ok) throw classify('Cohere', response.status, await readError(response));
+    const payload = await response.json();
+
+    const content = payload.message && payload.message.content;
+    const text = typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.filter(b => b && b.type === 'text').map(b => b.text || '').join('')
+        : '';
+    const tokens = (payload.usage && payload.usage.tokens) || {};
+
+    if (onDelta && text) onDelta(text);
+    return {
+      text,
+      // Cohere does not echo the served model, so this falls back to
+      // what was asked for rather than inventing a match.
+      servedModel: payload.model || model,
+      responseId: payload.id || '',
+      inputTokens: Number(tokens.input_tokens) || 0,
+      outputTokens: Number(tokens.output_tokens) || 0
+    };
+  }
+
+  // endpoint=chat is Cohere's own filter, so embedding and rerank
+  // models never reach the picker.
+  async function cohereModels(apiKey, signal) {
+    const url = new URL('https://api.cohere.com/v1/models');
+    url.searchParams.set('page_size', '1000');
+    url.searchParams.set('endpoint', 'chat');
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}` }, signal
+    });
+    if (!response.ok) throw classify('Cohere', response.status, await readError(response));
+    const payload = await response.json();
+    return (payload.models || []).map(entry => entry && entry.name).filter(Boolean);
+  }
+
+  // ─────────────────────────────────────────────
   // PUBLIC
   // ─────────────────────────────────────────────
 
   const ADAPTERS = {
     anthropic: { call: callAnthropic, models: anthropicModels },
     openai:    { call: callOpenAI,    models: openaiModels },
-    gemini:    { call: callGemini,    models: geminiModels }
+    gemini:    { call: callGemini,    models: geminiModels },
+    cohere:    { call: callCohere,    models: cohereModels }
   };
+
+  Object.keys(GATEWAYS).forEach(id => {
+    ADAPTERS[id] = { call: gatewayCall(id), models: gatewayModels(id) };
+  });
 
   /**
    * Run one meta-prompt against one input. One request, one response,
