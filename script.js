@@ -144,6 +144,11 @@
     workshopSaveLibraryBtn: $('workshop-save-library-btn'),
     workshopSaveScratchBtn: $('workshop-save-scratch-btn'),
     workshopDiscardBtn: $('workshop-discard-btn'),
+    workshopRefine: $('workshop-refine'),
+    workshopRefineInput: $('workshop-refine-input'),
+    workshopRefineBtn: $('workshop-refine-btn'),
+    workshopRestartBtn: $('workshop-restart-btn'),
+    workshopTurnCount: $('workshop-turn-count'),
 
     historyRange: $('history-range'),
     historyProvider: $('history-provider'),
@@ -1216,10 +1221,103 @@
     el.workshopRunBtn.disabled = running;
   }
 
-  async function runWorkshop() {
+  /* THE EXCHANGE
+
+     v2 was specified as one request and one response with no
+     conversation state. That is still what a first Run is — but an
+     output you nearly like is worth another turn rather than a
+     rewritten meta-prompt, so a thread can now continue.
+
+     state.thread holds the whole exchange:
+       system    the assembled meta-prompt, fixed for the thread
+       messages  alternating user/assistant turns, oldest first
+
+     The system message never changes once a thread starts. Rebuilding
+     it from a since-edited meta-prompt mid-exchange would silently
+     change the rules the earlier turns were answered under. */
+
+  function startThread(meta, input) {
+    const assembled = Runner.assemble(meta.text, input);
+    state.thread = {
+      metaPromptId: meta.id,
+      metaPromptTitle: meta.title,
+      system: assembled.system,
+      originalInput: input,
+      messages: [{ role: 'user', content: assembled.user }]
+    };
+    return state.thread;
+  }
+
+  function endThread() {
+    state.thread = null;
+    state.lastRun = null;
+    el.workshopOutput.textContent = '';
+    el.workshopReceipt.textContent = '';
+    el.workshopOutputActions.hidden = true;
+    el.workshopRefine.hidden = true;
+    el.workshopRefineInput.value = '';
+  }
+
+  // The first user turn is whatever is already sitting in the Input
+  // pane, so repeating it here would just be noise.
+  function renderThread({ streaming = false } = {}) {
+    const thread = state.thread;
+    el.workshopOutput.innerHTML = '';
+    if (!thread) return;
+
+    thread.messages.forEach((turn, index) => {
+      if (index === 0) return;
+      const block = document.createElement('div');
+      block.className = `turn turn-${turn.role}`;
+      const label = document.createElement('span');
+      label.className = 'turn-label';
+      label.textContent = turn.role === 'user' ? 'You asked for a change' : 'Model';
+      const text = document.createElement('div');
+      text.className = 'turn-text';
+      text.textContent = turn.content;
+      block.appendChild(label);
+      block.appendChild(text);
+      el.workshopOutput.appendChild(block);
+    });
+
+    if (streaming) {
+      const block = document.createElement('div');
+      block.className = 'turn turn-assistant';
+      const label = document.createElement('span');
+      label.className = 'turn-label';
+      label.textContent = 'Model';
+      const text = document.createElement('div');
+      text.className = 'turn-text is-streaming';
+      text.id = 'live-turn';
+      block.appendChild(label);
+      block.appendChild(text);
+      el.workshopOutput.appendChild(block);
+    }
+
+    el.workshopOutput.scrollTop = el.workshopOutput.scrollHeight;
+  }
+
+  function updateThreadControls() {
+    const thread = state.thread;
+    const replies = thread ? thread.messages.filter(m => m.role === 'assistant').length : 0;
+    el.workshopRefine.hidden = replies === 0;
+    el.workshopTurnCount.textContent = replies > 1 ? `${replies} replies in this exchange` : '';
+    el.workshopRefineBtn.disabled = state.running;
+    el.workshopRefineInput.disabled = state.running;
+  }
+
+  /**
+   * One turn of the exchange. With no argument this starts a fresh
+   * thread from the Input pane; with `refineText` it continues the
+   * current one.
+   *
+   * Every turn is recorded in History as its own run — a refinement
+   * costs tokens and can fail exactly like a first attempt, so it
+   * earns its own receipt.
+   */
+  async function runWorkshop(refineText) {
     const meta = Cloud.getPrompts().find(p => p.id === state.metaPromptId);
     if (!meta) { showToast('Pick a meta-prompt first.'); return; }
-    const input = el.workshopInput.value;
 
     const creds = Settings.readCredentials();
     if (!creds.keys[creds.provider]) {
@@ -1228,14 +1326,22 @@
       return;
     }
 
+    const isRefine = Boolean(refineText && state.thread);
+    if (isRefine) {
+      state.thread.messages.push({ role: 'user', content: refineText });
+    } else {
+      startThread(meta, el.workshopInput.value);
+    }
+
     state.lastRun = null;
-    el.workshopOutput.textContent = '';
-    el.workshopOutput.classList.add('is-streaming');
     el.workshopOutputActions.hidden = true;
     el.workshopReceipt.textContent = 'Running…';
     if (isPhone()) el.workshopOutputPane.classList.add('is-open');
     setRunning(true);
+    renderThread({ streaming: true });
+    updateThreadControls();
 
+    const live = document.getElementById('live-turn');
     state.abortController = new AbortController();
     const startedAt = Date.now();
     let receipt = null;
@@ -1243,12 +1349,13 @@
 
     try {
       receipt = await Runner.run({
-        metaPromptText: meta.text,
-        input,
+        system: state.thread.system,
+        messages: state.thread.messages,
         maxTokens: Cloud.getSettings().defaultMaxTokens,
         signal: state.abortController.signal,
         onDelta: chunk => {
-          el.workshopOutput.textContent += chunk;
+          if (!live) return;
+          live.textContent += chunk;
           el.workshopOutput.scrollTop = el.workshopOutput.scrollHeight;
         }
       });
@@ -1257,13 +1364,23 @@
     } finally {
       setRunning(false);
       state.abortController = null;
-      el.workshopOutput.classList.remove('is-streaming');
     }
 
     const aborted = failure && failure.name === 'AbortError';
 
+    if (receipt) {
+      state.thread.messages.push({ role: 'assistant', content: receipt.text });
+    } else if (isRefine) {
+      /* The refinement never got an answer, so drop it back out of the
+         thread. Leaving it would send the same unanswered turn again
+         on the next attempt and read as a question the model ignored. */
+      state.thread.messages.pop();
+    }
+
+    renderThread();
+    updateThreadControls();
+
     if (failure && !aborted) {
-      el.workshopOutput.textContent = '';
       const box = document.createElement('div');
       box.className = 'run-error';
       const strong = document.createElement('strong');
@@ -1286,17 +1403,16 @@
     // A history row is written for success AND failure. A run that
     // errored is exactly the one you want to find later.
     if (!aborted) {
-      const creds2 = Settings.readCredentials();
       const record = {
         id: Cloud.newId(),
         metaPromptId: meta.id,
-        metaPromptTitle: meta.title,
-        provider: receipt ? receipt.provider : creds2.provider,
-        requestedModel: receipt ? receipt.requestedModel : Settings.resolveModel(creds2.provider, creds2),
+        metaPromptTitle: isRefine ? `${meta.title} — refinement` : meta.title,
+        provider: receipt ? receipt.provider : creds.provider,
+        requestedModel: receipt ? receipt.requestedModel : Settings.resolveModel(creds.provider, creds),
         servedModel: receipt ? receipt.servedModel : '',
         responseId: receipt ? receipt.responseId : '',
         promptVersion: receipt ? receipt.promptVersion : Runner.PROMPT_VERSION,
-        input,
+        input: isRefine ? refineText : el.workshopInput.value,
         output: receipt ? receipt.text : '',
         status: receipt ? 'ok' : 'error',
         errorMessage: failure ? String(failure.message || '') : '',
@@ -1327,10 +1443,12 @@
         `${(receipt.durationMs / 1000).toFixed(1)}s`
       ].join(' · ') + (swapped ? ' (swapped)' : '');
       el.workshopOutputActions.hidden = false;
+      el.workshopRefineInput.value = '';
     }
 
     render();
   }
+
 
   function saveRunOutput(section) {
     if (!state.lastRun || !state.lastRun.output) return;
@@ -1615,7 +1733,7 @@
         <strong>${escapeHtml(meta.label)}</strong>
         <span class="provider-print">${escapeHtml(Settings.fingerprint(creds.keys[id]))}</span>
         <a class="provider-key-link" href="${escapeHtml(meta.keysUrl)}" target="_blank" rel="noreferrer noopener">Get a key</a>
-        <button class="btn btn-secondary" type="button" data-test-provider="${id}">Test</button>
+        <button class="btn" type="button" data-test-provider="${id}"><i class="fas fa-plug"></i> Test connection</button>
       </div>
       <div class="provider-row-fields">
         <label class="sr-only" for="key-${id}">${escapeHtml(meta.label)} API key</label>
@@ -1624,6 +1742,7 @@
         <select id="model-${id}" data-model-input="${id}"></select>
       </div>
       <p class="provider-test-note" data-test-note="${id}"></p>
+      <div class="provider-models" data-models="${id}" hidden></div>
       ${configured.length ? `<p class="provider-stored">Keys also stored for ${escapeHtml(configured.join(', '))}.</p>` : ''}`;
     el.providerRows.appendChild(row);
 
@@ -2184,7 +2303,12 @@
   el.workshopList.addEventListener('click', event => {
     const button = event.target.closest('[data-meta-id]');
     if (!button) return;
-    state.metaPromptId = Number(button.dataset.metaId);
+    const next = Number(button.dataset.metaId);
+    // A thread's system message belongs to the meta-prompt that
+    // started it; carrying it onto a different one would answer under
+    // rules the new prompt never set.
+    if (state.thread && state.thread.metaPromptId !== next) endThread();
+    state.metaPromptId = next;
     renderWorkshop();
   });
 
@@ -2196,21 +2320,41 @@
 
   el.workshopClearBtn.addEventListener('click', () => {
     el.workshopInput.value = '';
+    endThread();
+    renderSendPreview();
     el.workshopInput.focus();
   });
   el.workshopOutputBack.addEventListener('click', () => {
     el.workshopOutputPane.classList.remove('is-open');
   });
+  el.workshopRefineBtn.addEventListener('click', () => {
+    const text = el.workshopRefineInput.value.trim();
+    if (!text) { el.workshopRefineInput.focus(); return; }
+    runWorkshop(text);
+  });
+
+  // Enter sends, Shift+Enter makes a newline — the refinement box is
+  // for a sentence, not an essay.
+  el.workshopRefineInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      el.workshopRefineBtn.click();
+    }
+  });
+
+  el.workshopRestartBtn.addEventListener('click', () => {
+    endThread();
+    renderWorkshop();
+    el.workshopInput.focus();
+  });
+
   el.workshopCopyBtn.addEventListener('click', () => {
     if (state.lastRun) copyText(state.lastRun.output, 'Output copied.');
   });
   el.workshopSaveLibraryBtn.addEventListener('click', () => saveRunOutput('library'));
   el.workshopSaveScratchBtn.addEventListener('click', () => saveRunOutput('scratch'));
   el.workshopDiscardBtn.addEventListener('click', () => {
-    state.lastRun = null;
-    el.workshopOutput.textContent = '';
-    el.workshopReceipt.textContent = '';
-    el.workshopOutputActions.hidden = true;
+    endThread();
     el.workshopOutputPane.classList.remove('is-open');
   });
 
@@ -2320,7 +2464,29 @@
     });
   });
 
+  // Clicking a listed model pins it, so the list doubles as the picker.
   el.providerRows.addEventListener('click', event => {
+    const chip = event.target.closest('[data-pick-model]');
+    if (chip) {
+      const select = el.providerRows.querySelector(`[data-model-input="${chip.dataset.pickProvider}"]`);
+      if (select) {
+        if (![...select.options].some(o => o.value === chip.dataset.pickModel)) {
+          const option = document.createElement('option');
+          option.value = chip.dataset.pickModel;
+          option.textContent = chip.dataset.pickModel;
+          select.appendChild(option);
+        }
+        select.value = chip.dataset.pickModel;
+      }
+      collectCredentials();
+      el.providerRows.querySelectorAll('[data-pick-model]').forEach(other => {
+        other.classList.toggle('is-active', other === chip);
+      });
+      renderWorkshop();
+      showToast(`Model set to ${chip.dataset.pickModel}.`);
+      return;
+    }
+
     const button = event.target.closest('[data-test-provider]');
     if (!button) return;
     const providerId = button.dataset.testProvider;
@@ -2330,16 +2496,40 @@
     note.textContent = 'Testing…';
     button.disabled = true;
 
+    const list = el.providerRows.querySelector(`[data-models="${providerId}"]`);
+
+    /* Listing models IS the connection test. A 200 from that endpoint
+       means the key reached the provider and was accepted, and it
+       establishes that without spending a token on a throwaway
+       generation. The list it returns is also the only trustworthy
+       answer to "which models can this key use" — access is a property
+       of the account, and it changes without warning. */
     Runner.listModels(providerId, creds.keys[providerId], { force: true })
       .then(result => {
         note.className = 'provider-test-note is-ok';
-        note.textContent = `Key works — ${result.models.length} models available.`;
+        note.textContent = `Connected. ${result.models.length} ${result.models.length === 1 ? 'model' : 'models'} available to this key.`;
+
+        list.hidden = false;
+        list.innerHTML = '';
+        const active = Settings.resolveModel(providerId, Settings.readCredentials());
+        result.models.forEach(model => {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'model-chip' + (model === active ? ' is-active' : '');
+          chip.dataset.pickModel = model;
+          chip.dataset.pickProvider = providerId;
+          chip.textContent = model;
+          list.appendChild(chip);
+        });
+
         populateModelSelect(providerId, Settings.readCredentials());
-        renderSettings();
+        renderWorkshop();
       })
       .catch(error => {
         note.className = 'provider-test-note is-error';
         note.textContent = [error.message, error.hint].filter(Boolean).join(' ');
+        list.hidden = true;
+        list.innerHTML = '';
       })
       .finally(() => { button.disabled = false; });
   });

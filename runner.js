@@ -1,7 +1,12 @@
 /* ============================================================
    PROMPT STUDIO — model gateway
 
-   One call, three provider adapters, and a RECEIPT.
+   Nine provider adapters behind one call, and a RECEIPT.
+
+   A run takes a system prompt and a list of turns, so the same entry
+   point serves a first attempt and every refinement after it. The
+   caller owns the thread; this file only sends what it is handed and
+   normalises it into each vendor's wire format.
 
    The receipt is the point. "Which model wrote this" should be a
    recorded fact, not a label typed into a settings box — a provider
@@ -17,7 +22,7 @@
    note at the top of settings.js.
 
    STREAMING
-     Anthropic streams (SSE). OpenAI and Gemini are single-shot and
+     Anthropic streams (SSE). The other eight are single-shot and
      deliver their text in one onDelta call at the end. The caller
      sees one interface either way; `streams` on the provider meta
      says which it is, so the UI can promise token-by-token only
@@ -193,12 +198,12 @@
     };
   }
 
-  function anthropicBody({ model, system, user, maxTokens, effort, stream }) {
+  function anthropicBody({ model, system, messages, maxTokens, effort, stream }) {
     const f = flags(model);
     const body = {
       model,
       max_tokens: maxTokens,
-      messages: [{ role: 'user', content: user || '(no additional input)' }]
+      messages: toChatMessages(messages)
     };
     if (system) body.system = system;
     if (stream) body.stream = true;
@@ -228,14 +233,14 @@
   }
 
   async function callAnthropic(options) {
-    const { apiKey, model, system, user, maxTokens, effort, signal, onDelta } = options;
+    const { apiKey, model, system, messages, maxTokens, effort, signal, onDelta } = options;
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: anthropicHeaders(apiKey),
         body: JSON.stringify(anthropicBody({
-          model, system, user, maxTokens, effort, stream: true
+          model, system, messages, maxTokens, effort, stream: true
         })),
         signal
       });
@@ -347,14 +352,14 @@
   // OPENAI  (single-shot)
   // ─────────────────────────────────────────────
 
-  async function callOpenAI({ apiKey, model, system, user, maxTokens, signal, onDelta }) {
+  async function callOpenAI({ apiKey, model, system, messages, maxTokens, signal, onDelta }) {
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: { 'content-type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
         instructions: system || undefined,
-        input: user || '(no additional input)',
+        input: toChatMessages(messages),
         max_output_tokens: maxTokens,
         store: false
       }),
@@ -392,10 +397,13 @@
   // GEMINI  (single-shot)
   // ─────────────────────────────────────────────
 
-  async function callGemini({ apiKey, model, system, user, maxTokens, signal, onDelta }) {
+  async function callGemini({ apiKey, model, system, messages, maxTokens, signal, onDelta }) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
     const body = {
-      contents: [{ role: 'user', parts: [{ text: user || '(no additional input)' }] }],
+      contents: toChatMessages(messages).map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+      })),
       generationConfig: { maxOutputTokens: maxTokens }
     };
     if (system) body.systemInstruction = { parts: [{ text: system }] };
@@ -461,15 +469,15 @@
 
   function gatewayCall(providerId) {
     const gateway = GATEWAYS[providerId];
-    return async function call({ apiKey, model, system, user, maxTokens, signal, onDelta }) {
-      const messages = [];
-      if (system) messages.push({ role: 'system', content: system });
-      messages.push({ role: 'user', content: user || '(no additional input)' });
+    return async function call({ apiKey, model, system, messages, maxTokens, signal, onDelta }) {
+      const turns = [];
+      if (system) turns.push({ role: 'system', content: system });
+      toChatMessages(messages).forEach(m => turns.push(m));
 
       const response = await fetch(`${gateway.base}/chat/completions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
+        body: JSON.stringify({ model, messages: turns, max_tokens: maxTokens }),
         signal
       });
       if (!response.ok) {
@@ -521,15 +529,15 @@
   /* Cohere borrows OpenAI's request shape but not its reply: /v2/chat
      returns a single `message` whose text arrives as content blocks,
      and its token counts sit one level deeper under usage.tokens. */
-  async function callCohere({ apiKey, model, system, user, maxTokens, signal, onDelta }) {
-    const messages = [];
-    if (system) messages.push({ role: 'system', content: system });
-    messages.push({ role: 'user', content: user || '(no additional input)' });
+  async function callCohere({ apiKey, model, system, messages, maxTokens, signal, onDelta }) {
+    const turns = [];
+    if (system) turns.push({ role: 'system', content: system });
+    toChatMessages(messages).forEach(m => turns.push(m));
 
     const response = await fetch('https://api.cohere.com/v2/chat', {
       method: 'POST',
       headers: { 'content-type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, max_tokens: maxTokens }),
+      body: JSON.stringify({ model, messages: turns, max_tokens: maxTokens }),
       signal
     });
     if (!response.ok) throw classify('Cohere', response.status, await readError(response));
@@ -590,7 +598,7 @@
    *
    * @returns {Promise<object>} the receipt described at the top.
    */
-  async function run({ metaPromptText, input, maxTokens, signal, onDelta } = {}) {
+  async function run({ system, messages, maxTokens, signal, onDelta } = {}) {
     const creds = S.readCredentials();
     const provider = creds.provider;
     const adapter = ADAPTERS[provider];
@@ -604,14 +612,13 @@
     }
 
     const requestedModel = S.resolveModel(provider, creds);
-    const { system, user } = assemble(metaPromptText, input);
     const started = Date.now();
 
     const result = await adapter.call({
       apiKey,
       model: requestedModel,
       system,
-      user,
+      messages,
       maxTokens: Number(maxTokens) > 0 ? Number(maxTokens) : DEFAULT_MAX_TOKENS,
       effort: creds.effort,
       signal,
