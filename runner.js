@@ -163,6 +163,22 @@
     return { system: meta, user: idea, interpolated: false };
   }
 
+  /* Normalises a turn list into the role/content pairs every vendor
+     accepts. A conversation must start with a user turn and must not
+     carry an empty one — several of these APIs reject both outright. */
+  function toChatMessages(messages) {
+    const turns = (Array.isArray(messages) ? messages : [])
+      .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
+      .map(m => ({ role: m.role, content: String(m.content || '').trim() }))
+      .filter(m => m.content);
+
+    if (!turns.length) return [{ role: 'user', content: '(no additional input)' }];
+    if (turns[0].role !== 'user') {
+      turns.unshift({ role: 'user', content: '(no additional input)' });
+    }
+    return turns;
+  }
+
   // ─────────────────────────────────────────────
   // COST
   // ─────────────────────────────────────────────

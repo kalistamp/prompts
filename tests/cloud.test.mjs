@@ -53,8 +53,31 @@ function harness() {
     Runner: window.PromptRunner,
     Diff: window.PromptDiff,
     store,
-    logs
+    logs,
+    // Exposed so a test can swap `fetch` and drive the real adapters.
+    // Stubbing Runner.run instead would skip every line that builds a
+    // request — which is exactly how a missing helper shipped.
+    context
   };
+}
+
+/* Captures what an adapter actually sent. Returns the request log; set
+   `body` to the JSON the fake endpoint should answer with. */
+function stubFetch(harnessed, body, { ok = true, status = 200 } = {}) {
+  const calls = [];
+  harnessed.context.fetch = async (url, init = {}) => {
+    calls.push({
+      url: String(url),
+      headers: init.headers || {},
+      body: init.body ? JSON.parse(init.body) : null
+    });
+    return {
+      ok, status,
+      json: async () => body,
+      text: async () => JSON.stringify(body)
+    };
+  };
+  return calls;
 }
 
 // ─────────────────────────────────────────────
@@ -593,4 +616,171 @@ test('tags that differ only by grouping count as a change', () => {
 
   const same = Cloud.normalizePrompt({ id: 1, title: 'A', text: 'b', tags: ['a', 'b'] });
   assert.equal(Cloud.contentChanged(split, same), false);
+});
+
+// ─────────────────────────────────────────────
+// ADAPTERS — the real request-building path
+// ─────────────────────────────────────────────
+
+/* These drive Runner.run() with a stubbed `fetch`, so every line that
+   assembles a request actually executes. The earlier tests stubbed
+   Runner.run itself, which skipped the adapters entirely — and a
+   helper that was called five times but never defined passed both
+   `node --check` and the whole suite. */
+
+function withKey(h, provider) {
+  h.Settings.writeCredentials({
+    provider,
+    keys: { [provider]: 'test-key-0123456789abcdef' },
+    models: { [provider]: 'test-model' }
+  });
+}
+
+test('an OpenAI-compatible gateway sends system plus the full turn list', async () => {
+  const h = harness();
+  withKey(h, 'groq');
+  const calls = stubFetch(h, {
+    id: 'r1', model: 'test-model',
+    choices: [{ message: { content: 'answer' } }],
+    usage: { prompt_tokens: 11, completion_tokens: 7 }
+  });
+
+  const result = await h.Runner.run({
+    system: 'SYS',
+    messages: [
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply' },
+      { role: 'user', content: 'refine it' }
+    ]
+  });
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /api\.groq\.com/);
+  assert.deepEqual(plain(calls[0].body.messages), [
+    { role: 'system', content: 'SYS' },
+    { role: 'user', content: 'first' },
+    { role: 'assistant', content: 'reply' },
+    { role: 'user', content: 'refine it' }
+  ]);
+  assert.equal(result.text, 'answer');
+  assert.equal(result.inputTokens, 11);
+  assert.equal(result.outputTokens, 7);
+});
+
+test('Gemini renames the assistant role to model', async () => {
+  const h = harness();
+  withKey(h, 'gemini');
+  const calls = stubFetch(h, {
+    candidates: [{ content: { parts: [{ text: 'gemini answer' }] } }],
+    usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 9 },
+    modelVersion: 'test-model'
+  });
+
+  const result = await h.Runner.run({
+    system: 'SYS',
+    messages: [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'b' },
+      { role: 'user', content: 'c' }
+    ]
+  });
+
+  assert.deepEqual(plain(calls[0].body.contents.map(c => c.role)), ['user', 'model', 'user']);
+  assert.equal(calls[0].body.contents[1].parts[0].text, 'b');
+  // The system prompt rides in its own field, not in contents.
+  assert.equal(calls[0].body.systemInstruction.parts[0].text, 'SYS');
+  assert.equal(result.text, 'gemini answer');
+});
+
+test('Cohere reads content blocks and nested token counts', async () => {
+  const h = harness();
+  withKey(h, 'cohere');
+  const calls = stubFetch(h, {
+    id: 'c1', model: 'test-model',
+    message: { content: [{ type: 'text', text: 'part one ' }, { type: 'text', text: 'part two' }] },
+    usage: { tokens: { input_tokens: 3, output_tokens: 5 } }
+  });
+
+  const result = await h.Runner.run({ system: 'SYS', messages: [{ role: 'user', content: 'hi' }] });
+
+  assert.match(calls[0].url, /api\.cohere\.com\/v2\/chat/);
+  assert.equal(result.text, 'part one part two');
+  assert.equal(result.inputTokens, 3);
+  assert.equal(result.outputTokens, 5);
+});
+
+test('an empty turn list still produces a valid user turn', async () => {
+  const h = harness();
+  withKey(h, 'groq');
+  const calls = stubFetch(h, {
+    choices: [{ message: { content: 'ok' } }], usage: {}
+  });
+
+  // Several of these APIs reject a request whose first turn is empty
+  // or absent, so the normaliser has to substitute something.
+  await h.Runner.run({ system: 'SYS', messages: [] });
+  const turns = calls[0].body.messages.filter(m => m.role !== 'system');
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].role, 'user');
+  assert.ok(turns[0].content.length > 0);
+});
+
+test('a conversation that would start with an assistant turn is repaired', async () => {
+  const h = harness();
+  withKey(h, 'groq');
+  const calls = stubFetch(h, { choices: [{ message: { content: 'ok' } }], usage: {} });
+
+  await h.Runner.run({
+    system: 'SYS',
+    messages: [{ role: 'assistant', content: 'orphaned reply' }, { role: 'user', content: 'then me' }]
+  });
+
+  const turns = calls[0].body.messages.filter(m => m.role !== 'system');
+  assert.equal(turns[0].role, 'user', 'a user turn is inserted ahead of it');
+  assert.equal(turns[1].content, 'orphaned reply');
+});
+
+test('blank turns are dropped rather than sent', async () => {
+  const h = harness();
+  withKey(h, 'groq');
+  const calls = stubFetch(h, { choices: [{ message: { content: 'ok' } }], usage: {} });
+
+  await h.Runner.run({
+    system: 'SYS',
+    messages: [
+      { role: 'user', content: 'real' },
+      { role: 'assistant', content: '   ' },
+      { role: 'user', content: '' }
+    ]
+  });
+
+  const turns = calls[0].body.messages.filter(m => m.role !== 'system');
+  assert.deepEqual(plain(turns), [{ role: 'user', content: 'real' }]);
+});
+
+test('a provider error becomes an actionable message', async () => {
+  const h = harness();
+  withKey(h, 'groq');
+  stubFetch(h, { error: { message: 'nope' } }, { ok: false, status: 401 });
+
+  await assert.rejects(
+    () => h.Runner.run({ system: 'SYS', messages: [{ role: 'user', content: 'x' }] }),
+    err => {
+      assert.match(err.message, /rejected the API key/);
+      assert.equal(err.status, 401);
+      return true;
+    }
+  );
+});
+
+test('running with no key for the active provider refuses before any request', async () => {
+  const h = harness();
+  h.Settings.writeCredentials({ provider: 'groq', keys: { groq: '' } });
+  const calls = stubFetch(h, {});
+
+  await assert.rejects(
+    () => h.Runner.run({ system: 'SYS', messages: [{ role: 'user', content: 'x' }] }),
+    /No API key/
+  );
+  assert.equal(calls.length, 0, 'no request is attempted');
 });
