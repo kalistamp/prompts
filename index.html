@@ -9,7 +9,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.mistral.ai https://api.cohere.com https://router.huggingface.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
     <script>(function(){try{var p=JSON.parse(localStorage.getItem('ps.prefs.v1')||'{}');document.documentElement.setAttribute('data-theme',p.theme==='light'?'light':'dark')}catch(e){}})();</script>
-    <link rel="stylesheet" href="style.css?v=2">
+    <link rel="stylesheet" href="style.css?v=3">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha384-3B6NwesSXE7YJlcLI9RpRqGf2p/EgVH8BgoKTaUrmKNDkHPStTQ3EyoYjCGXaOTS" crossorigin="anonymous">
 </head>
 <body>
@@ -211,6 +211,10 @@
                                 <div class="workshop-input-body">
                                     <label class="sr-only" for="workshop-input">Your rough idea</label>
                                     <textarea id="workshop-input" placeholder="Paste the rough idea, the excerpt to clean up, or the thing to summarise…"></textarea>
+                                    <details class="send-preview" id="send-preview">
+                                        <summary><span id="send-preview-summary">How this will be sent</span></summary>
+                                        <div class="send-preview-body" id="send-preview-body"></div>
+                                    </details>
                                     <div class="workshop-run-bar">
                                         <span class="pane-meta" id="workshop-model-label">—</span>
                                         <div class="workshop-run-actions">
@@ -528,11 +532,11 @@
     </dialog>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4" integrity="sha384-yiVMs0R/Jyz7OhoXa/DsEMUSBLjEhr/QJta2ONO+zB6I8/GmNg/7AUFrZmAJV7KV" crossorigin="anonymous"></script>
-    <script src="./supabase-config.js?v=2"></script>
-    <script src="./settings.js?v=2"></script>
-    <script src="./cloud.js?v=2"></script>
-    <script src="./diff.js?v=2"></script>
-    <script src="./runner.js?v=2"></script>
-    <script src="./script.js?v=2"></script>
+    <script src="./supabase-config.js?v=3"></script>
+    <script src="./settings.js?v=3"></script>
+    <script src="./cloud.js?v=3"></script>
+    <script src="./diff.js?v=3"></script>
+    <script src="./runner.js?v=3"></script>
+    <script src="./script.js?v=3"></script>
 </body>
 </html>

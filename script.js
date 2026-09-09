@@ -137,6 +137,8 @@
     workshopOutputBack: $('workshop-output-back'),
     workshopOutput: $('workshop-output'),
     workshopReceipt: $('workshop-receipt'),
+    sendPreviewSummary: $('send-preview-summary'),
+    sendPreviewBody: $('send-preview-body'),
     workshopOutputActions: $('workshop-output-actions'),
     workshopCopyBtn: $('workshop-copy-btn'),
     workshopSaveLibraryBtn: $('workshop-save-library-btn'),
@@ -480,9 +482,18 @@
     return Cloud.getPrompts().filter(p => p.section === state.section);
   }
 
+  /* Pinned is a CROSS-SECTION view. The sidebar count for it has always
+     been global, but the list it opened was scoped to the section you
+     happened to be in — so pinning a prompt and then moving it to
+     Workshop made it disappear from Pinned while the count still
+     claimed it was there. The count was right; the list was wrong. */
+  function scopePrompts() {
+    return state.pinnedOnly ? Cloud.getPrompts() : sectionPrompts();
+  }
+
   function filteredPrompts() {
     const term = state.search.trim().toLowerCase();
-    return sectionPrompts().filter(p => {
+    return scopePrompts().filter(p => {
       const matchesSearch = !term ||
         p.title.toLowerCase().includes(term) ||
         p.text.toLowerCase().includes(term) ||
@@ -518,9 +529,13 @@
     // subset would silently move the hidden items too.
     const canReorder = state.sort === 'custom' && !isFiltering;
 
+    // Pinned spans every section now, so naming one would be a lie.
     el.viewTitle.textContent = state.pinnedOnly
-      ? `${SECTION_META[state.section].title} · Pinned`
+      ? 'Pinned'
       : (state.category || SECTION_META[state.section].title);
+    el.contextEyebrow.textContent = state.pinnedOnly
+      ? 'Across all sections'
+      : SECTION_META[state.section].eyebrow;
     el.resultCount.textContent = filtered.length;
 
     el.promptsContainer.innerHTML = '';
@@ -636,6 +651,13 @@
     return text.length > 300 || breaks >= 5;
   }
 
+  // Only shown in the Pinned view, where rows come from several
+  // sections and "which section is this in" is otherwise unanswerable.
+  function sectionChip(prompt) {
+    if (!state.pinnedOnly) return '';
+    return `<span class="section-chip">${escapeHtml(SECTION_META[prompt.section].title)}</span>`;
+  }
+
   function expiryChip(prompt) {
     if (prompt.section !== 'scratch' || !prompt.expiresAt) return '';
     const remaining = prompt.expiresAt - Date.now();
@@ -682,7 +704,7 @@
           <button class="tool-btn danger" data-action="delete" data-id="${p.id}" title="Delete" aria-label="Delete ${escapeHtml(p.title)}"><i class="fas fa-trash"></i></button>
         </div>
       </div>
-      ${tagsHtml || expiryChip(p) ? `<div class="item-tags">${tagsHtml}${expiryChip(p)}</div>` : ''}
+      ${tagsHtml || expiryChip(p) || sectionChip(p) ? `<div class="item-tags">${sectionChip(p)}${tagsHtml}${expiryChip(p)}</div>` : ''}
       <div class="prompt-body">${escapeHtml(p.text)}</div>
       ${bodyNeedsToggle(p.text) ? `<button class="preview-toggle" data-action="expand" data-id="${p.id}">${state.expandedIds.has(p.id)
         ? '<i class="fas fa-chevron-up"></i> Show less'
@@ -721,7 +743,7 @@
         <button class="tool-btn pin-btn${prompt.pinned ? ' pinned' : ''}" type="button" data-detail-action="pin" aria-label="${prompt.pinned ? 'Unpin' : 'Pin'}" aria-pressed="${prompt.pinned ? 'true' : 'false'}"><i class="${prompt.pinned ? 'fas' : 'far'} fa-star"></i></button>
       </div>
       <h2 class="detail-title">${escapeHtml(prompt.title)}</h2>
-      ${tags || expiryChip(prompt) ? `<div class="detail-tags">${tags}${expiryChip(prompt)}</div>` : ''}
+      ${tags || expiryChip(prompt) || sectionChip(prompt) ? `<div class="detail-tags">${sectionChip(prompt)}${tags}${expiryChip(prompt)}</div>` : ''}
       <div class="detail-meta">
         <span><i class="far fa-clock"></i> Updated ${escapeHtml(formatDate(prompt.updatedAt))}</span>
         <span><i class="far fa-calendar"></i> Created ${escapeHtml(formatDate(prompt.createdAt))}</span>
@@ -733,7 +755,7 @@
       <div class="detail-actions">
         <button class="btn" type="button" data-detail-action="copy"><i class="fas fa-copy"></i> Copy prompt</button>
         ${prompt.section !== 'workshop'
-          ? '<button class="btn btn-secondary" type="button" data-detail-action="to-workshop"><i class="fas fa-screwdriver-wrench"></i> Move to Workshop</button>'
+          ? '<button class="btn btn-secondary" type="button" data-detail-action="to-workshop"><i class="fas fa-screwdriver-wrench"></i> Copy to Workshop</button>'
           : '<button class="btn btn-secondary" type="button" data-detail-action="use"><i class="fas fa-play"></i> Use in Workshop</button>'}
         <button class="icon-btn" type="button" data-detail-action="versions" aria-label="Version history" title="Version history"><i class="fas fa-clock-rotate-left"></i></button>
         <button class="icon-btn" type="button" data-detail-action="edit" aria-label="Edit"><i class="fas fa-pen"></i></button>
@@ -859,6 +881,39 @@
         showToast('Prompt deleted.');
       }
     });
+  }
+
+  /* Copy, not move. `section` is a single column, so relocating a
+     prompt genuinely removes it from where it was — which is a
+     surprise when all you wanted was to run it as a meta-prompt, and
+     it took the pin with it. This leaves the original untouched and
+     puts an independent copy in Workshop, ready to be edited into a
+     meta-prompt without disturbing the one you rely on.
+
+     A real move is still available, deliberately: change the Section
+     field in the prompt editor. */
+  function copyToWorkshop(id) {
+    const source = Cloud.getPrompts().find(p => p.id === id);
+    if (!source) return;
+
+    const newId = Cloud.newId();
+    savePrompt({
+      ...source,
+      id: newId,
+      createdAt: newId,
+      updatedAt: newId,
+      order: newId,
+      section: 'workshop',
+      // The copy starts unpinned and unexpiring: the pin belongs to
+      // the original, and a Workshop prompt is never on a clock.
+      pinned: false,
+      expiresAt: null,
+      revision: 0
+    });
+
+    state.metaPromptId = newId;
+    render();
+    showToast(`Copied to Workshop. The original stays in ${SECTION_META[source.section].title}.`);
   }
 
   function movePromptToSection(id, section) {
@@ -1100,6 +1155,57 @@
       ? `${providerMeta.label} · ${model}`
       : `${providerMeta.label} · no API key`;
     el.workshopRunBtn.disabled = !selected || !hasKey || state.running;
+    renderSendPreview();
+  }
+
+  /* The assembled request, shown before it is sent.
+
+     Two modes, and which one applies is a property of the meta-prompt
+     rather than a setting:
+
+       · no {{input}}  — the meta-prompt is the system message and the
+                         input is a separate user message.
+       · {{input}}     — the input is substituted at that exact spot
+                         inside the meta-prompt, and the user message
+                         becomes a short stand-in.
+
+     Nothing is parsed out of the meta-prompt's own markup. A <prompt>
+     tag, or any other structure, is just text unless {{input}} sits
+     inside it — so this panel exists to make that visible instead of
+     leaving it to be inferred from the output. */
+  function renderSendPreview() {
+    const meta = Cloud.getPrompts().find(p => p.id === state.metaPromptId);
+    const body = el.sendPreviewBody;
+    const summary = el.sendPreviewSummary;
+    if (!body || !summary) return;
+
+    if (!meta) {
+      summary.textContent = 'How this will be sent';
+      body.innerHTML = '<p class="send-preview-note">Pick a meta-prompt on the left.</p>';
+      return;
+    }
+
+    const input = el.workshopInput.value;
+    const assembled = Runner.assemble(meta.text, input);
+
+    summary.textContent = assembled.interpolated
+      ? 'How this will be sent — your input goes inside {{input}}'
+      : 'How this will be sent — your input goes in a separate user message';
+
+    const block = (role, text, hint) =>
+      `<div class="send-block">
+         <span class="send-role">${escapeHtml(role)}</span>
+         ${hint ? `<span class="send-hint">${escapeHtml(hint)}</span>` : ''}
+         <pre>${escapeHtml(text) || '<em>(empty)</em>'}</pre>
+       </div>`;
+
+    body.innerHTML =
+      block('system', assembled.system,
+        assembled.interpolated ? `${meta.title} — with your input substituted` : meta.title) +
+      block('user', assembled.user,
+        assembled.interpolated ? 'a stand-in, because the input is already inline' : 'your input') +
+      (assembled.interpolated ? '' :
+        `<p class="send-preview-note">To place the input somewhere specific inside the meta-prompt instead — inside a <code>&lt;prompt&gt;</code> tag, say — put <code>{{input}}</code> at that spot and this panel will follow.</p>`);
   }
 
   function setRunning(running) {
@@ -1487,30 +1593,45 @@
     el.settingsRunsDays.value = cloudSettings.runsRetentionDays === null
       ? '' : String(cloudSettings.runsRetentionDays);
 
-    el.providerRows.innerHTML = '';
-    Settings.PROVIDER_IDS.forEach(id => {
-      const meta = Settings.PROVIDERS[id];
-      const row = document.createElement('div');
-      row.className = 'provider-row';
-      row.dataset.provider = id;
-      row.innerHTML = `
-        <div class="provider-row-head">
-          <strong>${escapeHtml(meta.label)}</strong>
-          <span class="provider-print">${escapeHtml(Settings.fingerprint(creds.keys[id]))}</span>
-          <button class="btn btn-secondary" type="button" data-test-provider="${id}">Test</button>
-        </div>
-        <div class="provider-row-fields">
-          <label class="sr-only" for="key-${id}">${escapeHtml(meta.label)} API key</label>
-          <input type="password" id="key-${id}" data-key-input="${id}" placeholder="${escapeHtml(meta.placeholder)}" autocomplete="off" spellcheck="false">
-          <label class="sr-only" for="model-${id}">${escapeHtml(meta.label)} model</label>
-          <select id="model-${id}" data-model-input="${id}"></select>
-        </div>
-        <p class="provider-test-note" data-test-note="${id}"></p>`;
-      el.providerRows.appendChild(row);
+    /* Only the active provider gets a row. Rendering all nine next to
+       a separate "active provider" dropdown made it easy to type a key
+       into one provider while another was the one that would actually
+       run — which reads as "no API key" on a provider you just
+       configured. One row means the key you enter is always the key
+       that gets used. Switching the dropdown swaps the row; keys for
+       the others stay stored and come back when reselected. */
+    const id = creds.provider;
+    const meta = Settings.PROVIDERS[id];
+    const configured = Settings.PROVIDER_IDS
+      .filter(other => other !== id && creds.keys[other])
+      .map(other => Settings.PROVIDERS[other].label);
 
-      row.querySelector(`[data-key-input="${id}"]`).value = creds.keys[id];
-      populateModelSelect(id, creds);
-    });
+    el.providerRows.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'provider-row';
+    row.dataset.provider = id;
+    row.innerHTML = `
+      <div class="provider-row-head">
+        <strong>${escapeHtml(meta.label)}</strong>
+        <span class="provider-print">${escapeHtml(Settings.fingerprint(creds.keys[id]))}</span>
+        <a class="provider-key-link" href="${escapeHtml(meta.keysUrl)}" target="_blank" rel="noreferrer noopener">Get a key</a>
+        <button class="btn btn-secondary" type="button" data-test-provider="${id}">Test</button>
+      </div>
+      <div class="provider-row-fields">
+        <label class="sr-only" for="key-${id}">${escapeHtml(meta.label)} API key</label>
+        <input type="password" id="key-${id}" data-key-input="${id}" placeholder="${escapeHtml(meta.placeholder)}" autocomplete="off" spellcheck="false">
+        <label class="sr-only" for="model-${id}">${escapeHtml(meta.label)} model</label>
+        <select id="model-${id}" data-model-input="${id}"></select>
+      </div>
+      <p class="provider-test-note" data-test-note="${id}"></p>
+      ${configured.length ? `<p class="provider-stored">Keys also stored for ${escapeHtml(configured.join(', '))}.</p>` : ''}`;
+    el.providerRows.appendChild(row);
+
+    row.querySelector(`[data-key-input="${id}"]`).value = creds.keys[id];
+    populateModelSelect(id, creds);
+
+    // Effort is an Anthropic control; the rest ignore it.
+    el.settingsEffort.closest('.form-control').hidden = !meta.supportsEffort;
 
     updateSweepSummary();
   }
@@ -1921,8 +2042,13 @@
     const pinnedButton = event.target.closest('[data-nav-mode="pinned"]');
     const categoryButton = event.target.closest('[data-category]');
     if (pinnedButton) {
-      if (state.section === 'history') setSection('library');
-      state.pinnedOnly = !state.pinnedOnly;
+      const next = !state.pinnedOnly;
+      /* Pinned renders into the list view. Toggling it from Workshop
+         or History left those views on screen, so the filter appeared
+         to do nothing at all — land on a section that can show a list
+         first. setSection clears the flag, so it is set afterwards. */
+      if (next && SECTION_META[state.section].view !== 'list') setSection('library');
+      state.pinnedOnly = next;
       state.category = '';
       el.categoryFilter.value = '';
       pinnedButton.classList.toggle('active', state.pinnedOnly);
@@ -2046,7 +2172,7 @@
       pin: () => togglePin(id),
       edit: () => openPromptEditor(id),
       delete: () => deletePrompt(id),
-      'to-workshop': () => movePromptToSection(id, 'workshop'),
+      'to-workshop': () => copyToWorkshop(id),
       use: () => { state.metaPromptId = id; setSection('workshop'); },
       versions: () => openVersions(id)
     };
@@ -2066,6 +2192,8 @@
   el.workshopStopBtn.addEventListener('click', () => {
     if (state.abortController) state.abortController.abort();
   });
+  el.workshopInput.addEventListener('input', renderSendPreview);
+
   el.workshopClearBtn.addEventListener('click', () => {
     el.workshopInput.value = '';
     el.workshopInput.focus();
@@ -2161,16 +2289,35 @@
   // Settings
   el.settingsBtn.addEventListener('click', openSettings);
 
-  el.settingsProvider.addEventListener('change', () => { collectCredentials(); renderWorkshop(); });
+  el.settingsProvider.addEventListener('change', () => {
+    // Save whatever is typed in the current row before swapping it out.
+    collectCredentials();
+    renderSettings();
+    renderWorkshop();
+  });
+
   el.settingsEffort.addEventListener('change', collectCredentials);
 
-  el.providerRows.addEventListener('change', event => {
-    if (event.target.closest('[data-key-input]') || event.target.closest('[data-model-input]')) {
-      const creds = collectCredentials();
+  /* `input` as well as `change`: a password field only fires `change`
+     on blur, so a key typed and left focused was not saved yet, and the
+     run panel went on reporting "no API key" for a provider that
+     looked configured. */
+  ['input', 'change'].forEach(eventName => {
+    el.providerRows.addEventListener(eventName, event => {
       const keyInput = event.target.closest('[data-key-input]');
-      if (keyInput) populateModelSelect(keyInput.dataset.keyInput, creds);
+      const modelInput = event.target.closest('[data-model-input]');
+      if (!keyInput && !modelInput) return;
+
+      const creds = collectCredentials();
+      const active = el.providerRows.querySelector('.provider-print');
+      if (active && keyInput) {
+        active.textContent = Settings.fingerprint(creds.keys[keyInput.dataset.keyInput]);
+      }
+      // Repopulating the model list on every keystroke would fight the
+      // open dropdown, so that waits for the field to settle.
+      if (eventName === 'change' && keyInput) populateModelSelect(keyInput.dataset.keyInput, creds);
       renderWorkshop();
-    }
+    });
   });
 
   el.providerRows.addEventListener('click', event => {

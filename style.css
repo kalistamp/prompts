@@ -3102,3 +3102,116 @@ dialog.palette::backdrop {
     .diff-field { grid-template-columns: minmax(0, 1fr); }
     .diff-field > span { grid-row: auto; }
 }
+
+/* ---- Send preview + provider row extras -------------------- */
+.send-preview {
+    flex: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    font-size: 0.79rem;
+}
+
+.send-preview > summary {
+    padding: 8px 12px;
+    cursor: pointer;
+    color: var(--fg-muted);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.send-preview > summary::-webkit-details-marker { display: none; }
+
+.send-preview > summary::before {
+    content: "\203A";
+    color: var(--fg-subtle);
+    transition: transform var(--fast) var(--ease);
+    display: inline-block;
+}
+
+.send-preview[open] > summary::before { transform: rotate(90deg); }
+.send-preview[open] > summary { border-bottom: 1px solid var(--border); }
+
+.send-preview-body {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 260px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+
+.send-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.send-role {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--primary);
+}
+
+.send-hint { font-size: 0.72rem; color: var(--fg-subtle); }
+
+.send-block pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    line-height: 1.55;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--surface-sunken);
+    border: 1px solid var(--border);
+    max-height: 130px;
+    overflow-y: auto;
+    color: var(--fg-muted);
+}
+
+.send-preview-note {
+    font-size: 0.75rem;
+    color: var(--fg-subtle);
+    line-height: 1.5;
+}
+
+.send-preview-note code {
+    font-family: var(--mono);
+    background: var(--surface-sunken);
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+}
+
+.provider-key-link {
+    font-size: 0.74rem;
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.provider-key-link:hover { text-decoration: underline; }
+
+.provider-stored {
+    margin-top: 8px;
+    font-size: 0.74rem;
+    color: var(--fg-subtle);
+}
+
+/* Section badge, shown only in the cross-section Pinned view. */
+.section-chip {
+    font-size: 0.68rem;
+    font-weight: 650;
+    letter-spacing: 0.03em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--primary);
+    color: var(--primary);
+    background: var(--primary-soft);
+    white-space: nowrap;
+}

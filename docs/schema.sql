@@ -209,8 +209,19 @@ end $$;
 create or replace function prompts.apply_prompt_changes(changes jsonb)
 returns table (prompt_id int8, new_revision int8)
 language plpgsql
-security invoker
-set search_path = prompts, public, pg_catalog
+-- SECURITY DEFINER, as the v1 function was. The client never writes
+-- prompt_items directly — every write goes through this one function —
+-- so under INVOKER it ran as `authenticated`, which holds SELECT but
+-- not INSERT/UPDATE on the table, and every save failed with
+-- "permission denied for table prompt_items".
+--
+-- DEFINER is safe here because the function derives the owner itself:
+-- uid comes from auth.uid(), it raises if that is null, every statement
+-- is scoped to user_id = uid, and no client-supplied user_id is ever
+-- read. search_path is pinned so a DEFINER function cannot be steered
+-- at objects in another schema.
+security definer
+set search_path = prompts, pg_catalog
 as $$
 declare
   uid      uuid := auth.uid();
