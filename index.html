@@ -9,7 +9,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.mistral.ai https://api.cohere.com https://router.huggingface.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
     <script>(function(){try{var p=JSON.parse(localStorage.getItem('ps.prefs.v1')||'{}');document.documentElement.setAttribute('data-theme',p.theme==='light'?'light':'dark')}catch(e){}})();</script>
-    <link rel="stylesheet" href="style.css?v=5">
+    <link rel="stylesheet" href="style.css?v=7">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha384-3B6NwesSXE7YJlcLI9RpRqGf2p/EgVH8BgoKTaUrmKNDkHPStTQ3EyoYjCGXaOTS" crossorigin="anonymous">
 </head>
 <body>
@@ -220,7 +220,7 @@
                                         <span class="pane-meta" id="workshop-model-label">—</span>
                                         <div class="workshop-run-actions">
                                             <button class="btn btn-secondary" type="button" id="workshop-clear-btn">Clear</button>
-                                            <button class="btn" type="button" id="workshop-run-btn"><i class="fas fa-play"></i> Run</button>
+                                            <button class="btn" type="button" id="workshop-run-btn"><i class="fas fa-play"></i> Run <kbd class="btn-kbd" id="run-kbd"></kbd></button>
                                             <button class="btn btn-danger" type="button" id="workshop-stop-btn" hidden><i class="fas fa-stop"></i> Stop</button>
                                         </div>
                                     </div>
@@ -246,7 +246,7 @@
                                     <div class="workshop-refine-actions">
                                         <span class="pane-meta" id="workshop-turn-count"></span>
                                         <button class="btn btn-secondary" type="button" id="workshop-restart-btn" title="Discard this exchange and start again">Start over</button>
-                                        <button class="btn" type="button" id="workshop-refine-btn"><i class="fas fa-arrow-turn-up"></i> Send</button>
+                                        <button class="btn" type="button" id="workshop-refine-btn"><i class="fas fa-arrow-turn-up"></i> Send <kbd class="btn-kbd">↵</kbd></button>
                                     </div>
                                 </div>
                                 <div class="workshop-output-actions" id="workshop-output-actions" hidden>
@@ -569,12 +569,12 @@
     </dialog>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4" integrity="sha384-yiVMs0R/Jyz7OhoXa/DsEMUSBLjEhr/QJta2ONO+zB6I8/GmNg/7AUFrZmAJV7KV" crossorigin="anonymous"></script>
-    <script src="./supabase-config.js?v=5"></script>
-    <script src="./settings.js?v=5"></script>
-    <script src="./cloud.js?v=5"></script>
-    <script src="./diff.js?v=5"></script>
-    <script src="./markdown.js?v=5"></script>
-    <script src="./runner.js?v=5"></script>
-    <script src="./script.js?v=5"></script>
+    <script src="./supabase-config.js?v=7"></script>
+    <script src="./settings.js?v=7"></script>
+    <script src="./cloud.js?v=7"></script>
+    <script src="./diff.js?v=7"></script>
+    <script src="./markdown.js?v=7"></script>
+    <script src="./runner.js?v=7"></script>
+    <script src="./script.js?v=7"></script>
 </body>
 </html>

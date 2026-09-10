@@ -1211,18 +1211,31 @@
       ? 'How this will be sent — your input goes inside {{input}}'
       : 'How this will be sent — your input goes in a separate user message';
 
-    const block = (role, text, hint) =>
-      `<div class="send-block">
+    /* Clamped, never scrollable. A scroll box nested inside another
+       scroll box is two scrollbars competing for the same gesture,
+       and it made a long system prompt genuinely hard to read here.
+       Long blocks fade out and send you to the full viewer instead. */
+    const CLAMP_LINES = 6;
+    const block = (role, text, hint) => {
+      const body = String(text || '');
+      const clamped = body.split('\n').length > CLAMP_LINES || body.length > 420;
+      return `<div class="send-block${clamped ? ' is-clamped' : ''}">
          <span class="send-role">${escapeHtml(role)}</span>
          ${hint ? `<span class="send-hint">${escapeHtml(hint)}</span>` : ''}
-         <pre>${escapeHtml(text) || '<em>(empty)</em>'}</pre>
+         <pre>${escapeHtml(body) || '<em>(empty)</em>'}</pre>
        </div>`;
+    };
 
     body.innerHTML =
       block('system', assembled.system,
         assembled.interpolated ? `${meta.title} — with your input substituted` : meta.title) +
       block('user', assembled.user,
         assembled.interpolated ? 'a stand-in, because the input is already inline' : 'your input') +
+      // The escape hatch sits where the frustration is, not only in
+      // the pane header where it is easy to miss.
+      `<button class="btn btn-secondary send-preview-open" type="button" data-open-full-prompt>
+         <i class="fas fa-up-right-and-down-left-from-center"></i> Read the full system prompt
+       </button>` +
       (assembled.interpolated ? '' :
         `<p class="send-preview-note">To place the input somewhere specific inside the meta-prompt instead — inside a <code>&lt;prompt&gt;</code> tag, say — put <code>{{input}}</code> at that spot and this panel will follow.</p>`);
   }
@@ -2453,6 +2466,12 @@
 
   el.viewPromptBtn.addEventListener('click', openPromptView);
 
+  // The preview is re-rendered on every keystroke, so its button is
+  // reached by delegation rather than rebound each time.
+  el.sendPreviewBody.addEventListener('click', event => {
+    if (event.target.closest('[data-open-full-prompt]')) openPromptView();
+  });
+
   el.promptViewCopy.addEventListener('click', () => {
     // Always the source text, never the rendered HTML.
     if (state.promptView) copyText(state.promptView.text, 'Prompt copied.');
@@ -2778,7 +2797,13 @@
     }
     if (meta && event.key === 'Enter' && state.section === 'workshop' && !state.running) {
       event.preventDefault();
-      runWorkshop();
+      /* Context-aware: from the refine box the obvious meaning of
+         "send this" is the refinement, not a fresh run that would
+         throw the exchange away. */
+      const inRefine = document.activeElement === el.workshopRefineInput;
+      const refinement = el.workshopRefineInput.value.trim();
+      if (inRefine && refinement && state.thread) runWorkshop(refinement);
+      else runWorkshop();
       return;
     }
     if (meta && event.key.toLowerCase() === 's') {
@@ -2913,6 +2938,15 @@
     el.sortSelect.value = state.sort;
     updateViewButtons();
     setOutputMode(state.outputMode);
+
+    /* The shortcut has always worked; nothing said so. Label it with
+       the modifier this machine actually uses — telling a Windows user
+       to press ⌘ is worse than saying nothing. */
+    const isMac = /Mac|iPhone|iPad/.test(
+      (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent
+    );
+    const runKbd = $('run-kbd');
+    if (runKbd) runKbd.textContent = isMac ? '⌘↵' : 'Ctrl+↵';
     el.clearSearchBtn.style.display = 'none';
 
     if (!window.supabase) {

@@ -3598,3 +3598,117 @@ dialog.palette::backdrop {
     .turn-text.is-rendered { font-size: 0.88rem; max-width: none; }
     .ghost-btn { padding: 5px 8px; }
 }
+
+/* ============================================================
+   SEND PREVIEW — clamp, don't nest a scrollbar
+   The preview body scrolls. A block inside it must not, or the two
+   compete for the same wheel gesture and a long system prompt
+   becomes unreadable in a 130px window.
+   ============================================================ */
+.send-block {
+    position: relative;
+}
+
+.send-block pre {
+    max-height: none;
+    overflow: visible;
+}
+
+.send-block.is-clamped pre {
+    max-height: 9.4em;
+    overflow: hidden;
+}
+
+/* Fades the cut edge so it reads as "there is more", rather than as
+   a sentence that happens to stop. */
+.send-block.is-clamped pre::after {
+    content: "";
+    position: absolute;
+    left: 1px;
+    right: 1px;
+    bottom: 1px;
+    height: 3.2em;
+    border-radius: 0 0 6px 6px;
+    background: linear-gradient(to bottom,
+        color-mix(in srgb, var(--surface-sunken) 0%, transparent),
+        var(--surface-sunken));
+    pointer-events: none;
+}
+
+.send-preview-body { max-height: 320px; }
+
+.send-preview-open {
+    align-self: flex-start;
+    font-size: 0.78rem;
+    padding: 7px 13px;
+}
+
+/* ---- The header button, promoted -------------------------- */
+/* It was a ghost button sitting between a heading and a caption, and
+   read as a caption itself. */
+#view-prompt-btn {
+    border-color: var(--border);
+    background: var(--surface-2);
+    color: var(--fg);
+}
+
+#view-prompt-btn:hover {
+    border-color: var(--primary);
+    background: var(--primary-soft);
+    color: var(--primary);
+}
+
+/* ---- The viewer is a document, so give it room ------------- */
+#prompt-view-dialog .sheet-inner {
+    width: min(940px, calc(100vw - 48px));
+    height: min(90dvh, 1000px);
+}
+
+#prompt-view-dialog .prompt-view-body { padding: 22px 26px; }
+
+#prompt-view-dialog .prompt-view-body.turn-text {
+    font-size: 0.86rem;
+    line-height: 1.75;
+    color: var(--fg);
+}
+
+#prompt-view-dialog .prompt-view-body.is-rendered {
+    font-size: 0.95rem;
+    line-height: 1.72;
+}
+
+@media (max-width: 699px) {
+    #prompt-view-dialog .sheet-inner {
+        width: 100vw;
+        height: 92dvh;
+    }
+
+    #prompt-view-dialog .prompt-view-body { padding: 16px 15px; }
+    .send-preview-open { align-self: stretch; justify-content: center; }
+}
+
+/* ---- Shortcut badge on a button ---------------------------- */
+.btn-kbd {
+    margin-left: 2px;
+    padding: 1px 6px;
+    border-radius: 5px;
+    font-family: var(--mono);
+    font-size: 0.68em;
+    font-weight: 600;
+    line-height: 1.5;
+    color: inherit;
+    background: color-mix(in srgb, var(--on-primary) 22%, transparent);
+    border: 1px solid color-mix(in srgb, var(--on-primary) 26%, transparent);
+    white-space: nowrap;
+}
+
+.btn-secondary .btn-kbd {
+    background: var(--surface-sunken);
+    border-color: var(--border);
+    color: var(--fg-subtle);
+}
+
+@media (max-width: 699px) {
+    /* No hardware keyboard to hint at. */
+    .btn-kbd { display: none; }
+}
