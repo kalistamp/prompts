@@ -301,7 +301,18 @@
         ? saved.sort : DEFAULT_PREFS.sort,
       section: ['library', 'workshop', 'scratch', 'history'].includes(saved.section)
         ? saved.section : DEFAULT_PREFS.section,
-      outputMode: saved.outputMode === 'raw' ? 'raw' : DEFAULT_PREFS.outputMode
+      outputMode: saved.outputMode === 'raw' ? 'raw' : DEFAULT_PREFS.outputMode,
+
+      /* Width of the reading pane, in px, when the user has dragged
+         the splitter. `null` means "unset", which is not the same as
+         a width that happens to equal the default: unset follows the
+         responsive defaults as the window changes, and a set width
+         does not. The stylesheet clamps whatever comes back, so a
+         width saved on a 3440 monitor cannot strand the pane
+         off-screen on a laptop. */
+      detailWidth: Number.isFinite(saved.detailWidth) && saved.detailWidth > 0
+        ? Math.round(saved.detailWidth)
+        : null
     };
   }
 

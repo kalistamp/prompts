@@ -48,6 +48,16 @@
     // The exchange: system prompt plus alternating turns.
     thread: null,
     outputMode: prefs.outputMode,
+    // The run in flight: 'idle' | 'thinking' | 'streaming', plus the
+    // clock that turns a silent wait into a legible one.
+    runPhase: 'idle',
+    runStartedAt: 0,
+    elapsedTimer: null,
+    // The meta-prompt picker, opened by "/" or by the composer chip.
+    slashOpen: false,
+    slashIndex: 0,
+    slashItems: [],
+    previewOpen: false,
 
     // Full prompt viewer
     promptView: null,
@@ -60,6 +70,9 @@
     historyProvider: '',
     historyStatus: '',
     historyUnsavedOnly: false,
+    // Identical consecutive failures collapse to one row; this holds
+    // the groups the user has chosen to open back up.
+    expandedRepeats: new Set(),
 
     pendingConfirm: null,
     pendingRunDelete: null,
@@ -128,35 +141,38 @@
     categoryFilter: $('category-filter'),
     sortSelect: $('sort-select'),
     promptsContainer: $('prompts-container'),
+    panes: $('list-detail-panes'),
+    paneResizer: $('pane-resizer'),
     detailPanel: $('detail-panel'),
     detailEmpty: $('detail-empty'),
     detailContent: $('detail-content'),
     categoryList: $('category-list'),
 
-    workshopList: $('workshop-list'),
-    workshopSelectedName: $('workshop-selected-name'),
+    // Workshop — the run surface. One composer, one thread. The
+    // second textarea, the picker pane, the output pane and the
+    // four-button action row it carried are all gone.
+    composer: $('composer'),
+    composerMetaChip: $('composer-meta-chip'),
+    composerMetaName: $('composer-meta-name'),
+    composerModelChip: $('composer-model-chip'),
+    composerModelName: $('composer-model-name'),
+    composerPreviewChip: $('composer-preview-chip'),
+    composerHint: $('composer-hint'),
+    threadScroll: $('thread-scroll'),
+    workshopThread: $('workshop-thread'),
+    threadLive: $('thread-live'),
+    slashMenu: $('slash-menu'),
     workshopInput: $('workshop-input'),
-    workshopModelLabel: $('workshop-model-label'),
     workshopClearBtn: $('workshop-clear-btn'),
     workshopRunBtn: $('workshop-run-btn'),
+    workshopRunLabel: $('workshop-run-label'),
     workshopStopBtn: $('workshop-stop-btn'),
-    workshopOutputPane: $('workshop-output-pane'),
-    workshopOutputBack: $('workshop-output-back'),
-    workshopOutput: $('workshop-output'),
-    workshopReceipt: $('workshop-receipt'),
     sendPreviewSummary: $('send-preview-summary'),
     sendPreviewBody: $('send-preview-body'),
-    workshopOutputActions: $('workshop-output-actions'),
-    workshopCopyBtn: $('workshop-copy-btn'),
-    workshopSaveLibraryBtn: $('workshop-save-library-btn'),
-    workshopSaveScratchBtn: $('workshop-save-scratch-btn'),
-    workshopDiscardBtn: $('workshop-discard-btn'),
-    workshopRefine: $('workshop-refine'),
-    workshopRefineInput: $('workshop-refine-input'),
-    workshopRefineBtn: $('workshop-refine-btn'),
-    workshopRestartBtn: $('workshop-restart-btn'),
-    workshopTurnCount: $('workshop-turn-count'),
     viewPromptBtn: $('view-prompt-btn'),
+
+    libraryFilterChips: $('library-filter-chips'),
+    historyFilterChips: $('history-filter-chips'),
     promptViewDialog: $('prompt-view-dialog'),
     promptViewTitle: $('prompt-view-title'),
     promptViewNote: $('prompt-view-note'),
@@ -420,19 +436,73 @@
   // THEME
   // ─────────────────────────────────────────────
 
+  /* Whether motion is wanted at all. Every transition below is
+     routed through this, so "reduce" is honoured by the JS as well
+     as by the stylesheet — a View Transition is not a CSS animation
+     and the media query alone would not stop one. */
+  function motionOK() {
+    return !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  /* A same-document View Transition, where the browser has one.
+     Native, so there is no animation loop and no library — and the
+     fallback is simply doing the work, which is what used to happen
+     unconditionally. */
+  function transition(update, className) {
+    if (!document.startViewTransition || !motionOK()) { update(); return Promise.resolve(); }
+    if (className) document.documentElement.classList.add(className);
+    const vt = document.startViewTransition(update);
+    return vt.finished
+      .catch(() => { /* interrupted by a second transition */ })
+      .finally(() => { if (className) document.documentElement.classList.remove(className); });
+  }
+
   function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     const isDark = theme === 'dark';
     el.themeToggle.innerHTML = `<i class="fas fa-${isDark ? 'sun' : 'moon'}"></i>`;
     el.themeToggle.setAttribute('aria-label', isDark ? 'Switch to light mode' : 'Switch to dark mode');
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = isDark ? '#0b1120' : '#f5f7fb';
+    // Kept in step with --bg in the token block, for the browser
+    // chrome on mobile.
+    if (meta) meta.content = isDark ? '#05090f' : '#e6ebf4';
   }
 
-  el.themeToggle.addEventListener('click', () => {
+  /* The new theme is wiped in under a circle growing from the toggle,
+     so the change reads as coming from the control that caused it
+     rather than as the page blinking. Everything here degrades: no
+     View Transition support, or reduced motion, and applyTheme just
+     runs. */
+  el.themeToggle.addEventListener('click', async () => {
     const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
     Settings.writePrefs({ theme: next });
-    applyTheme(next);
+
+    const canClip = typeof document.startViewTransition === 'function' &&
+      typeof el.themeToggle.animate === 'function' && motionOK();
+
+    if (!canClip) { applyTheme(next); return; }
+
+    const box = el.themeToggle.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    // The far corner decides the radius, so the circle always covers
+    // the viewport however near an edge the button sits.
+    const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+
+    document.documentElement.classList.add('vt-theme');
+    const vt = document.startViewTransition(() => applyTheme(next));
+    try {
+      await vt.ready;
+      await document.documentElement.animate(
+        { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+        { duration: 460, easing: 'cubic-bezier(0.16, 1, 0.3, 1)', pseudoElement: '::view-transition-new(root)' }
+      ).finished;
+    } catch (e) {
+      /* A browser with startViewTransition but no pseudoElement
+         animation still gets the theme — it just gets it instantly. */
+    } finally {
+      document.documentElement.classList.remove('vt-theme');
+    }
   });
 
   // ─────────────────────────────────────────────
@@ -448,6 +518,18 @@
 
   function setSection(section) {
     if (!SECTION_META[section]) return;
+    // Switching away from the Workshop mid-picker would leave the
+    // menu open behind a view that no longer contains it.
+    closeSlashMenu();
+    // Cross-faded rather than swapped between frames. The work is
+    // identical either way; `transition` only wraps it — and there is
+    // nothing to cross-fade to when the section is already current,
+    // where this still has to run because it clears the filters.
+    if (state.section === section) { applySection(section); return; }
+    transition(() => applySection(section));
+  }
+
+  function applySection(section) {
     state.section = section;
     state.selectedPromptId = null;
     state.pinnedOnly = false;
@@ -470,6 +552,7 @@
     });
 
     closeSidebar();
+    animateNextRender();
     render();
   }
 
@@ -541,6 +624,33 @@
   // RENDER — list (Library / Scratch)
   // ─────────────────────────────────────────────
 
+  /* Position within the current render, for the staggered reveal.
+     Rows span several category sections, so the counter cannot live
+     inside the per-section loop or every section would restart it. */
+  let rowIndex = 0;
+
+  /* Whether the NEXT render animates its rows in.
+
+     Rows should arrive when the list changes wholesale — first
+     paint, a section switch, a filter dropped. They must not when
+     the list is being narrowed a character at a time: search calls
+     render() on every keystroke, and restarting a twenty-row
+     staggered fade on each one turns typing into a strobe.
+
+     So it is opt-in, and every render consumes it. */
+  let staggerRows = true;
+
+  function animateNextRender() { staggerRows = true; }
+
+  function stagger(node, index) {
+    if (!staggerRows) return node;
+    node.classList.add('stagger-in');
+    // A custom property through the CSSOM: allowed by the style CSP,
+    // where a style="" attribute would be blocked outright.
+    node.style.setProperty('--i', String(index));
+    return node;
+  }
+
   function renderList() {
     const filtered = filteredPrompts();
     const isFiltering = Boolean(state.search.trim() || state.category || state.pinnedOnly);
@@ -558,6 +668,10 @@
     el.resultCount.textContent = filtered.length;
 
     el.promptsContainer.innerHTML = '';
+    renderLibraryChips();
+    // Restarts the staggered reveal on every render, so the counter
+    // is per-render rather than per-session.
+    rowIndex = 0;
 
     if (state.selectedPromptId && !filtered.some(p => p.id === state.selectedPromptId)) {
       state.selectedPromptId = null;
@@ -582,6 +696,7 @@
             : '<button class="btn btn-secondary" type="button" data-action="clear-filters"><i class="fas fa-xmark"></i> Clear filters</button>'}
         </div>`;
       renderDetail();
+      staggerRows = false;
       return;
     }
 
@@ -618,6 +733,8 @@
     });
 
     renderDetail();
+    // Consumed: the next render is plain unless something asks again.
+    staggerRows = false;
   }
 
   function buildCategorySection(cat, list, canReorder, isFiltering, extraClass) {
@@ -653,7 +770,9 @@
     const grid = document.createElement('div');
     grid.className = 'prompts-grid view-' + state.view;
 
-    list.forEach((p, index) => grid.appendChild(createItem(p, cat, canReorder, index, list.length)));
+    list.forEach((p, index) => {
+      grid.appendChild(stagger(createItem(p, cat, canReorder, index, list.length), rowIndex++));
+    });
 
     inner.appendChild(grid);
     content.appendChild(inner);
@@ -798,6 +917,147 @@
   }
 
   // ─────────────────────────────────────────────
+  // THE SPLIT
+  // ─────────────────────────────────────────────
+
+  /* A window splitter between the list and the reading pane.
+
+     The stored value is a width in px, or null for "never dragged" —
+     and those are genuinely different states, not the same one
+     written twice. Unset follows the responsive default as the
+     window changes; a set width does not, because you set it.
+
+     The width is applied as a custom property rather than as a
+     grid-template-columns override, so the stylesheet keeps the
+     clamp() and a width dragged out on an ultrawide cannot squeeze
+     the list to nothing on a laptop. */
+  const SPLIT_MIN = 300;
+  const SPLIT_STEP = 24;
+
+  function splitBounds() {
+    const total = el.panes.getBoundingClientRect().width;
+    // Mirrors the 56% ceiling in the stylesheet. Two places, because
+    // CSS cannot clamp a drag and JS should not own the layout.
+    return { min: SPLIT_MIN, max: Math.max(SPLIT_MIN, Math.round(total * 0.56)) };
+  }
+
+  function applySplit(px, { persist = false } = {}) {
+    if (px === null) {
+      el.panes.style.removeProperty('--detail-w');
+      if (persist) Settings.writePrefs({ detailWidth: null });
+      describeSplit();
+      return;
+    }
+
+    /* Clamp against the container ONLY when there is a container to
+       measure. At boot the workspace is still `hidden` behind the
+       sign-in screen, so it measures zero — and clamping against
+       zero collapsed every restored width to the 300px minimum. The
+       symptom was that dragging the splitter appeared to work and
+       then silently reset on the next visit.
+
+       With no width to measure, write the stored value through and
+       let the stylesheet's own clamp() bound it at first layout,
+       which is what that clamp is for. */
+    const total = el.panes.getBoundingClientRect().width;
+    const value = total > 0
+      ? Math.round(Math.min(Math.round(total * 0.56), Math.max(SPLIT_MIN, px)))
+      : Math.round(px);
+
+    el.panes.style.setProperty('--detail-w', value + 'px');
+    // Only ever persists a measured value: every caller that persists
+    // is a user gesture, and by then the workspace is on screen.
+    if (persist) Settings.writePrefs({ detailWidth: value });
+    describeSplit();
+  }
+
+  /* The splitter reports its position as a percentage, which is the
+     one number that stays meaningful when the window is resized. */
+  function describeSplit() {
+    const total = el.panes.getBoundingClientRect().width;
+    if (!total) return;
+    const width = el.detailPanel.getBoundingClientRect().width;
+    const pct = Math.round((width / total) * 100);
+    el.paneResizer.setAttribute('aria-valuenow', String(pct));
+    el.paneResizer.setAttribute('aria-valuemin', String(Math.round((SPLIT_MIN / total) * 100)));
+    el.paneResizer.setAttribute('aria-valuemax', '56');
+    el.paneResizer.setAttribute('aria-valuetext', `Reading pane ${pct}% of the workspace`);
+  }
+
+  function currentSplit() {
+    return el.detailPanel.getBoundingClientRect().width;
+  }
+
+  el.paneResizer.addEventListener('pointerdown', event => {
+    if (!isDesktop() && !window.matchMedia('(min-width: 700px)').matches) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = currentSplit();
+    let moved = false;
+
+    el.paneResizer.classList.add('is-dragging');
+    document.body.classList.add('is-resizing');
+    try { el.paneResizer.setPointerCapture(event.pointerId); } catch (e) { /* older browsers */ }
+
+    function move(e) {
+      // Dragging left grows the reading pane, which is the direction
+      // the handle is being pulled.
+      const next = startWidth - (e.clientX - startX);
+      if (Math.abs(e.clientX - startX) > 2) moved = true;
+      applySplit(next);
+    }
+
+    function end() {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+      el.paneResizer.classList.remove('is-dragging');
+      document.body.classList.remove('is-resizing');
+      // Written once, on release — not on every pointermove, which
+      // would be a localStorage write per frame.
+      if (moved) applySplit(currentSplit(), { persist: true });
+    }
+
+    /* On `window`, not on the handle. Pointer capture normally keeps
+       the events coming, but the handle is 7px wide and the pointer
+       leaves it on the first frame of any real drag — so if capture
+       is unavailable or gets released, a handle-scoped listener
+       silently stops receiving moves mid-gesture. The window never
+       does. */
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+  });
+
+  el.paneResizer.addEventListener('keydown', event => {
+    const step = event.shiftKey ? SPLIT_STEP * 4 : SPLIT_STEP;
+    const { min, max } = splitBounds();
+    const keys = {
+      ArrowLeft: () => applySplit(currentSplit() + step, { persist: true }),
+      ArrowRight: () => applySplit(currentSplit() - step, { persist: true }),
+      Home: () => applySplit(max, { persist: true }),
+      End: () => applySplit(min, { persist: true }),
+      // The same escape hatch the double-click gives a mouse.
+      Enter: () => applySplit(null, { persist: true })
+    };
+    const action = keys[event.key];
+    if (!action) return;
+    event.preventDefault();
+    action();
+  });
+
+  // Back to whatever the window size says it should be.
+  el.paneResizer.addEventListener('dblclick', () => {
+    applySplit(null, { persist: true });
+    showToast('Reading pane reset.');
+  });
+
+  /* A stored width is a px value, and the percentage it represents
+     changes as the window does — so the announced value has to be
+     recomputed rather than remembered. */
+  window.addEventListener('resize', describeSplit);
+
+  // ─────────────────────────────────────────────
   // CATEGORIES
   // ─────────────────────────────────────────────
 
@@ -836,6 +1096,142 @@
       button.querySelector('.nav-count').textContent = list.filter(p => p.category === category).length;
       el.sidebarCategories.appendChild(button);
     });
+  }
+
+  // ─────────────────────────────────────────────
+  // ACTIVE FILTERS, AS CHIPS
+  // ─────────────────────────────────────────────
+
+  /* The controls that SET a filter are selects in a toolbar. Once
+     you have scrolled, nothing on screen says a filter is on — so
+     "No matching prompts" reads as "you have no prompts", and a
+     short list reads as a short library. These say which filters are
+     active and remove one per click. */
+  function buildChips(container, chips) {
+    container.innerHTML = '';
+    container.hidden = chips.length === 0;
+    if (!chips.length) return;
+
+    const label = document.createElement('span');
+    label.className = 'filter-chips-label';
+    label.textContent = 'Filtered by';
+    container.appendChild(label);
+
+    chips.forEach(chip => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'filter-chip';
+      button.title = `Remove: ${chip.label}`;
+      const icon = document.createElement('i');
+      icon.className = `fas ${chip.icon}`;
+      icon.setAttribute('aria-hidden', 'true');
+      const text = document.createElement('span');
+      text.textContent = chip.label;
+      const x = document.createElement('span');
+      x.className = 'chip-x';
+      x.innerHTML = '<i class="fas fa-xmark" aria-hidden="true"></i>';
+      button.appendChild(icon);
+      button.appendChild(text);
+      button.appendChild(x);
+      button.setAttribute('aria-label', `Remove filter: ${chip.label}`);
+      // Dropping a filter widens the list, so the rows that come
+      // back are worth showing arriving.
+      button.addEventListener('click', () => { animateNextRender(); chip.clear(); });
+      container.appendChild(button);
+    });
+
+    if (chips.length > 1) {
+      const clearAll = document.createElement('button');
+      clearAll.type = 'button';
+      clearAll.className = 'filter-chip-clear';
+      clearAll.textContent = 'Clear all';
+      clearAll.addEventListener('click', () => { animateNextRender(); chips.forEach(c => c.clear(true)); });
+      container.appendChild(clearAll);
+    }
+  }
+
+  function renderLibraryChips() {
+    const chips = [];
+    if (state.search.trim()) {
+      chips.push({
+        icon: 'fa-magnifying-glass',
+        label: `“${state.search.trim()}”`,
+        clear: () => { el.searchInput.value = ''; state.search = ''; el.clearSearchBtn.style.display = 'none'; render(); }
+      });
+    }
+    if (state.category) {
+      chips.push({
+        icon: 'fa-folder',
+        label: state.category,
+        clear: () => { state.category = ''; el.categoryFilter.value = ''; render(); }
+      });
+    }
+    if (state.pinnedOnly) {
+      chips.push({
+        icon: 'fa-star',
+        label: 'Pinned only',
+        clear: () => {
+          state.pinnedOnly = false;
+          const button = el.sidebar.querySelector('[data-nav-mode="pinned"]');
+          if (button) button.classList.remove('active');
+          render();
+        }
+      });
+    }
+    buildChips(el.libraryFilterChips, chips);
+  }
+
+  function renderHistoryChips() {
+    const RANGES = { '1': 'Last 24 hours', '7': 'Last 7 days', '30': 'Last 30 days' };
+    const chips = [];
+    if (state.historyRange !== 'all') {
+      chips.push({
+        icon: 'fa-calendar',
+        label: RANGES[state.historyRange] || state.historyRange,
+        clear: r => { state.historyRange = 'all'; el.historyRange.value = 'all'; if (!r) renderHistory(); }
+      });
+    }
+    if (state.historyProvider) {
+      const meta = Settings.PROVIDERS[state.historyProvider];
+      chips.push({
+        icon: 'fa-microchip',
+        label: (meta && meta.label) || state.historyProvider,
+        clear: r => { state.historyProvider = ''; el.historyProvider.value = ''; if (!r) renderHistory(); }
+      });
+    }
+    if (state.historyStatus) {
+      chips.push({
+        icon: state.historyStatus === 'error' ? 'fa-triangle-exclamation' : 'fa-check',
+        label: state.historyStatus === 'error' ? 'Failed only' : 'Succeeded only',
+        clear: r => { state.historyStatus = ''; el.historyStatus.value = ''; if (!r) renderHistory(); }
+      });
+    }
+    if (state.historyUnsavedOnly) {
+      chips.push({
+        icon: 'fa-inbox',
+        label: 'No saved output',
+        clear: r => { state.historyUnsavedOnly = false; el.historyUnsaved.checked = false; if (!r) renderHistory(); }
+      });
+    }
+    buildChips(el.historyFilterChips, chips);
+
+    /* "Clear all" passes true so each chip skips its own re-render;
+       one render at the end, not four. */
+    const clearAll = el.historyFilterChips.querySelector('.filter-chip-clear');
+    if (clearAll) clearAll.addEventListener('click', () => renderHistory());
+  }
+
+  function clearHistoryFilters() {
+    animateNextRender();
+    state.historyRange = 'all';
+    state.historyProvider = '';
+    state.historyStatus = '';
+    state.historyUnsavedOnly = false;
+    el.historyRange.value = 'all';
+    el.historyProvider.value = '';
+    el.historyStatus.value = '';
+    el.historyUnsaved.checked = false;
+    renderHistory();
   }
 
   // ─────────────────────────────────────────────
@@ -1128,6 +1524,14 @@
       .sort((a, b) => a.title.localeCompare(b.title));
   }
 
+  function selectedMeta() {
+    return Cloud.getPrompts().find(p => p.id === state.metaPromptId) || null;
+  }
+
+  /* Composer context, thread, and the run button label. The picker
+     pane it replaced held three items in 280px of permanent chrome;
+     the same list is now one keystroke away and takes no space at
+     rest. */
   function renderWorkshop() {
     const list = metaPrompts();
     el.viewTitle.textContent = 'Workshop';
@@ -1138,43 +1542,128 @@
     }
     if (!state.metaPromptId && list.length) state.metaPromptId = list[0].id;
 
-    el.workshopList.innerHTML = '';
-    if (!list.length) {
-      el.workshopList.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-state-icon"><i class="fas fa-screwdriver-wrench"></i></div>
-          <h2>No meta-prompts yet</h2>
-          <p>A meta-prompt is the prompt that writes your prompts. Create one to start running.</p>
-          <button class="btn" type="button" data-open-prompt data-section-hint="workshop"><i class="fas fa-plus"></i> New meta-prompt</button>
-        </div>`;
-    } else {
-      list.forEach(p => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'workshop-item' + (p.id === state.metaPromptId ? ' is-selected' : '');
-        button.dataset.metaId = p.id;
-        const title = document.createElement('strong');
-        title.textContent = p.title;
-        const sub = document.createElement('span');
-        sub.textContent = p.text.replace(/\s+/g, ' ').slice(0, 90);
-        button.appendChild(title);
-        button.appendChild(sub);
-        el.workshopList.appendChild(button);
-      });
-    }
-
-    const selected = list.find(p => p.id === state.metaPromptId);
-    el.workshopSelectedName.textContent = selected ? selected.title : 'No meta-prompt selected';
+    const meta = selectedMeta();
+    el.composerMetaName.textContent = meta ? meta.title : 'Pick a meta-prompt';
+    el.composerMetaChip.classList.toggle('is-primary', Boolean(meta));
+    el.composerMetaChip.classList.toggle('is-empty', !meta);
+    el.composerMetaChip.disabled = !list.length;
+    el.viewPromptBtn.disabled = !meta;
 
     const creds = Settings.readCredentials();
     const providerMeta = Settings.PROVIDERS[creds.provider];
     const model = Settings.resolveModel(creds.provider, creds);
     const hasKey = Boolean(creds.keys[creds.provider]);
-    el.workshopModelLabel.textContent = hasKey
-      ? `${providerMeta.label} · ${model}`
-      : `${providerMeta.label} · no API key`;
-    el.workshopRunBtn.disabled = !selected || !hasKey || state.running;
+    el.composerModelName.textContent = hasKey ? model : `${providerMeta.label} · no key`;
+    el.composerModelChip.title = hasKey
+      ? `${providerMeta.label} · ${model} — change in Settings`
+      : `${providerMeta.label} has no API key yet — add one in Settings`;
+    el.composerModelChip.classList.toggle('is-empty', !hasKey);
+
+    // The button says which of the two things it will do, because in
+    // a thread "Run" and "Send a change" are different acts.
+    const continuing = Boolean(state.thread && threadReplies() > 0);
+    el.workshopRunLabel.textContent = continuing ? 'Send' : 'Run';
+    el.workshopRunBtn.disabled = !meta || !hasKey || state.running;
+
+    el.composerHint.textContent = !list.length
+      ? 'Create a meta-prompt to start running.'
+      : !hasKey
+        ? 'Add an API key in Settings to run.'
+        : continuing
+          ? 'Continuing this exchange — the meta-prompt stays fixed.'
+          : 'Press / to switch meta-prompt.';
+
     renderSendPreview();
+    renderThread();
+    updateRunControls();
+  }
+
+  function threadReplies() {
+    return state.thread ? state.thread.messages.filter(m => m.role === 'assistant').length : 0;
+  }
+
+  // ─────────────────────────────────────────────
+  // THE META-PROMPT PICKER ("/")
+  // ─────────────────────────────────────────────
+
+  /* Opened by the chip, or by "/" as the first character of an empty
+     composer — the same convention as a slash command, and the
+     reason the picker no longer needs a pane of its own. Typing
+     filters; Arrow keys move; Enter picks; Escape closes and leaves
+     what you had typed alone. */
+  function openSlashMenu(query) {
+    const list = metaPrompts();
+    const term = String(query || '').trim().toLowerCase();
+    state.slashItems = term
+      ? list.filter(p => p.title.toLowerCase().includes(term) || p.text.toLowerCase().includes(term))
+      : list;
+    state.slashOpen = true;
+    state.slashIndex = Math.max(0, state.slashItems.findIndex(p => p.id === state.metaPromptId));
+    el.composerMetaChip.setAttribute('aria-expanded', 'true');
+    renderSlashMenu();
+  }
+
+  function closeSlashMenu() {
+    if (!state.slashOpen) return;
+    state.slashOpen = false;
+    state.slashItems = [];
+    if (el.slashMenu) el.slashMenu.hidden = true;
+    if (el.composerMetaChip) el.composerMetaChip.setAttribute('aria-expanded', 'false');
+    if (el.workshopInput) el.workshopInput.removeAttribute('aria-activedescendant');
+  }
+
+  function renderSlashMenu() {
+    el.slashMenu.hidden = false;
+    el.slashMenu.innerHTML = '';
+
+    if (!state.slashItems.length) {
+      const empty = document.createElement('p');
+      empty.className = 'slash-empty';
+      empty.textContent = metaPrompts().length
+        ? 'No meta-prompt matches.'
+        : 'No meta-prompts yet — a meta-prompt is the prompt that writes your prompts.';
+      el.slashMenu.appendChild(empty);
+      el.workshopInput.removeAttribute('aria-activedescendant');
+      return;
+    }
+
+    state.slashItems.forEach((p, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.id = `slash-opt-${p.id}`;
+      button.className = 'slash-item' +
+        (index === state.slashIndex ? ' is-active' : '') +
+        (p.id === state.metaPromptId ? ' is-current' : '');
+      button.dataset.metaId = p.id;
+      button.setAttribute('role', 'option');
+      button.setAttribute('aria-selected', String(index === state.slashIndex));
+      const title = document.createElement('strong');
+      title.textContent = p.title;
+      const sub = document.createElement('span');
+      sub.textContent = p.text.replace(/\s+/g, ' ').slice(0, 110);
+      button.appendChild(title);
+      button.appendChild(sub);
+      el.slashMenu.appendChild(button);
+    });
+
+    const active = state.slashItems[state.slashIndex];
+    if (active) el.workshopInput.setAttribute('aria-activedescendant', `slash-opt-${active.id}`);
+    const activeEl = el.slashMenu.querySelector('.is-active');
+    if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+  }
+
+  function chooseMeta(id) {
+    const next = Number(id);
+    // A thread system message belongs to the meta-prompt that started
+    // it; carrying it onto a different one would answer under rules
+    // the new prompt never set.
+    if (state.thread && state.thread.metaPromptId !== next) endThread();
+    state.metaPromptId = next;
+    closeSlashMenu();
+    // "/" typed to open the picker is a command, not content.
+    if (el.workshopInput.value.trim() === '/') el.workshopInput.value = '';
+    renderWorkshop();
+    el.workshopInput.focus();
   }
 
   /* The assembled request, shown before it is sent.
@@ -1199,17 +1688,19 @@
     if (!body || !summary) return;
 
     if (!meta) {
-      summary.textContent = 'How this will be sent';
-      body.innerHTML = '<p class="send-preview-note">Pick a meta-prompt on the left.</p>';
+      summary.textContent = 'How this is sent';
+      body.innerHTML = '<p class="send-preview-note">Pick a meta-prompt first — press / in the composer.</p>';
       return;
     }
 
     const input = el.workshopInput.value;
     const assembled = Runner.assemble(meta.text, input);
 
+    // The chip is narrow, so it carries the distinction and the panel
+    // carries the detail.
     summary.textContent = assembled.interpolated
-      ? 'How this will be sent — your input goes inside {{input}}'
-      : 'How this will be sent — your input goes in a separate user message';
+      ? 'Input goes inside {{input}}'
+      : 'Input sent as a user message';
 
     /* Clamped, never scrollable. A scroll box nested inside another
        scroll box is two scrollbars competing for the same gesture,
@@ -1240,12 +1731,82 @@
         `<p class="send-preview-note">To place the input somewhere specific inside the meta-prompt instead — inside a <code>&lt;prompt&gt;</code> tag, say — put <code>{{input}}</code> at that spot and this panel will follow.</p>`);
   }
 
-  function setRunning(running) {
-    state.running = running;
-    el.workshopRunBtn.hidden = running;
-    el.workshopStopBtn.hidden = !running;
-    el.workshopInput.disabled = running;
-    el.workshopRunBtn.disabled = running;
+  /* RUN STATE
+
+     idle → thinking → (streaming) → idle.
+
+     "thinking" exists because eight of the nine providers do not
+     stream: runner.js marks only Anthropic `streams: true`, so for
+     everything else the whole call is one silent wait. The longest
+     recorded run in History is 28.8s. All the app used to show for
+     that was the word "Running…" in a caption, which is the same
+     thing a hung request looks like. Now it shows a state, a live
+     clock and a three-line skeleton, so a slow answer is legibly
+     different from a broken one. */
+  /* Run state, spoken.
+
+     The thread itself is deliberately NOT an aria-live region: it
+     was one, and a streaming answer in a live region is re-announced
+     on every token, which is unusable. This is a separate polite
+     channel that carries only the transitions — started, finished,
+     failed — so the run is followable without listening to it
+     arrive one word at a time. */
+  function announce(message) {
+    if (!el.threadLive) return;
+    el.threadLive.textContent = message;
+  }
+
+  function setRunPhase(phase) {
+    state.runPhase = phase;
+    state.running = phase !== 'idle';
+
+    el.workshopRunBtn.hidden = state.running;
+    el.workshopStopBtn.hidden = !state.running;
+    // The composer stays editable while a run is in flight: the next
+    // refinement is usually being typed before the current answer
+    // lands, and disabling it threw that away.
+    el.workshopRunBtn.disabled = state.running;
+
+    if (state.running) startElapsed();
+    else stopElapsed();
+
+    updateRunControls();
+  }
+
+  function startElapsed() {
+    if (state.elapsedTimer) return;
+    state.runStartedAt = Date.now();
+    state.elapsedTimer = setInterval(paintElapsed, 100);
+    paintElapsed();
+  }
+
+  function stopElapsed() {
+    clearInterval(state.elapsedTimer);
+    state.elapsedTimer = null;
+  }
+
+  /* Written straight into the node rather than through a re-render:
+     ten times a second through renderThread would rebuild the whole
+     exchange, and a rebuild mid-stream loses the caret position and
+     the scroll. */
+  function paintElapsed() {
+    const node = el.workshopThread.querySelector('.run-state .elapsed');
+    if (!node) return;
+    node.textContent = `${((Date.now() - state.runStartedAt) / 1000).toFixed(1)}s`;
+  }
+
+  function updateRunControls() {
+    const hasText = el.workshopInput.value.trim().length > 0;
+    const meta = selectedMeta();
+    const hasKey = Settings.hasKey(Settings.readCredentials().provider);
+    if (!state.running) {
+      // A first run may be sent with an empty composer — some
+      // meta-prompts need no input at all. A refinement may not:
+      // an empty follow-up asks the model nothing.
+      const continuing = Boolean(state.thread && threadReplies() > 0);
+      el.workshopRunBtn.disabled = !meta || !hasKey || (continuing && !hasText);
+    }
+    el.workshopClearBtn.hidden = !state.thread && !hasText;
   }
 
   /* THE EXCHANGE
@@ -1356,6 +1917,23 @@
     });
   }
 
+  /* THE EXCHANGE
+
+     state.thread holds the whole conversation:
+       system    the assembled meta-prompt, fixed for the thread
+       messages  alternating user/assistant turns, oldest first
+
+     The system message never changes once a thread starts.
+     Rebuilding it from a since-edited meta-prompt mid-exchange would
+     silently change the rules the earlier turns were answered under.
+
+     Each turn also carries what to SHOW, which is not always what
+     was sent. When the meta-prompt contains {{input}} the first user
+     message on the wire is the stand-in "Follow the instructions
+     above…", and showing that instead of what you typed would be a
+     lie about your own question. `display` holds your words; that is
+     why the first turn can now be rendered at all, where the old
+     view skipped it. */
   function startThread(meta, input) {
     const assembled = Runner.assemble(meta.text, input);
     state.thread = {
@@ -1363,7 +1941,11 @@
       metaPromptTitle: meta.title,
       system: assembled.system,
       originalInput: input,
-      messages: [{ role: 'user', content: assembled.user }]
+      messages: [{
+        role: 'user',
+        content: assembled.user,
+        display: String(input || '').trim() || '(no input — the meta-prompt runs on its own)'
+      }]
     };
     return state.thread;
   }
@@ -1371,79 +1953,254 @@
   function endThread() {
     state.thread = null;
     state.lastRun = null;
-    el.workshopOutput.textContent = '';
-    el.workshopReceipt.textContent = '';
-    el.workshopOutputActions.hidden = true;
-    el.workshopRefine.hidden = true;
-    el.workshopRefineInput.value = '';
+    renderThread();
+    updateRunControls();
   }
 
-  // The first user turn is whatever is already sitting in the Input
-  // pane, so repeating it here would just be noise.
-  function renderThread({ streaming = false } = {}) {
-    const thread = state.thread;
-    el.workshopOutput.innerHTML = '';
-    if (!thread) return;
+  // ─────────────────────────────────────────────
+  // THREAD RENDERING
+  // ─────────────────────────────────────────────
 
-    thread.messages.forEach((turn, index) => {
-      if (index === 0) return;
-      const block = document.createElement('div');
-      block.className = `turn turn-${turn.role}`;
-      const label = document.createElement('span');
-      label.className = 'turn-label';
-      label.textContent = turn.role === 'user' ? 'You asked for a change' : 'Model';
-      const text = document.createElement('div');
-      // Your own refinements stay plain — they are a sentence you
-      // typed, not a document, and rendering them would be noise.
-      if (turn.role === 'assistant') {
-        paintText(text, turn.content, state.outputMode);
-      } else {
-        text.className = 'turn-text';
-        text.textContent = turn.content;
-      }
-      block.appendChild(label);
-      block.appendChild(text);
-      el.workshopOutput.appendChild(block);
-    });
+  function turnEl(cls) {
+    const node = document.createElement('div');
+    node.className = cls;
+    return node;
+  }
 
-    if (streaming) {
-      const block = document.createElement('div');
-      block.className = 'turn turn-assistant';
-      const label = document.createElement('span');
-      label.className = 'turn-label';
-      label.textContent = 'Model';
-      const text = document.createElement('div');
-      text.className = 'turn-text is-streaming';
-      text.id = 'live-turn';
-      block.appendChild(label);
-      block.appendChild(text);
-      el.workshopOutput.appendChild(block);
+  function runStateChip(phase, label) {
+    const chip = turnEl('run-state');
+    chip.dataset.state = phase;
+
+    if (phase === 'thinking' || phase === 'streaming') {
+      chip.appendChild(turnEl('run-mark is-spinning'));
+    } else if (phase === 'ok') {
+      chip.appendChild(turnEl('run-mark is-done'));
     }
 
-    el.workshopOutput.scrollTop = el.workshopOutput.scrollHeight;
+    const text = document.createElement('span');
+    text.textContent = label;
+    chip.appendChild(text);
+
+    if (phase === 'thinking' || phase === 'streaming') {
+      const clock = document.createElement('span');
+      clock.className = 'elapsed';
+      clock.textContent = '0.0s';
+      chip.appendChild(clock);
+    }
+    return chip;
   }
 
-  function updateThreadControls() {
-    const thread = state.thread;
-    const replies = thread ? thread.messages.filter(m => m.role === 'assistant').length : 0;
-    el.workshopRefine.hidden = replies === 0;
-    el.workshopTurnCount.textContent = replies > 1 ? `${replies} replies in this exchange` : '';
-    el.workshopRefineBtn.disabled = state.running;
-    el.workshopRefineInput.disabled = state.running;
+  /* One assistant turn: the answer, its receipt, and the actions that
+     belong to THAT answer. The four buttons this replaces sat under
+     the whole pane and acted on whichever reply happened to be last,
+     which in a multi-turn exchange is not a thing you can point at. */
+  function buildAssistantTurn(turn, index) {
+    const block = turnEl('turn turn-assistant' + (turn.failed ? ' turn-failed' : ''));
+
+    const head = turnEl('turn-head');
+    const label = turnEl('turn-label');
+    label.innerHTML = '<i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i> Model';
+    head.appendChild(label);
+    if (turn.run) {
+      head.appendChild(runStateChip(turn.run.status === 'error' ? 'error' : 'ok',
+        turn.run.status === 'error' ? 'Failed' : 'Done'));
+    }
+    block.appendChild(head);
+
+    const body = turnEl('turn-body');
+    if (turn.failed) {
+      const box = turnEl('run-error');
+      const strong = document.createElement('strong');
+      strong.textContent = turn.content || 'The run failed.';
+      box.appendChild(strong);
+      if (turn.hint) {
+        const span = document.createElement('span');
+        span.textContent = turn.hint;
+        box.appendChild(span);
+      }
+      body.appendChild(box);
+    } else {
+      const text = document.createElement('div');
+      paintText(text, turn.content, state.outputMode);
+      body.appendChild(text);
+    }
+    block.appendChild(body);
+
+    if (turn.run) block.appendChild(buildReceipt(turn.run));
+
+    if (!turn.failed) {
+      const actions = turnEl('turn-actions');
+      actions.appendChild(turnAction('fa-copy', 'Copy', 'copy', index));
+      actions.appendChild(turnAction('fa-book', 'Save to Library', 'save-library', index));
+      actions.appendChild(turnAction('fa-note-sticky', 'Drop to Scratch', 'save-scratch', index));
+      if (turn.run) actions.appendChild(turnAction('fa-receipt', 'Receipt', 'receipt', index));
+      block.appendChild(actions);
+    }
+    return block;
   }
+
+  function turnAction(icon, label, action, index) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'turn-action';
+    button.dataset.turnAction = action;
+    button.dataset.turnIndex = String(index);
+    button.innerHTML = `<i class="fas ${icon}" aria-hidden="true"></i> ${escapeHtml(label)}`;
+    return button;
+  }
+
+  function buildReceipt(run) {
+    const box = turnEl('turn-receipt');
+    const bits = [];
+    if (run.status === 'error') {
+      bits.push(run.requestedModel || '—');
+    } else {
+      const swapped = run.servedModel && run.requestedModel && run.servedModel !== run.requestedModel;
+      bits.push((run.servedModel || run.requestedModel || '—') + (swapped ? ' (swapped)' : ''));
+      bits.push(`${(run.inputTokens || 0).toLocaleString()}→${(run.outputTokens || 0).toLocaleString()} tok`);
+      bits.push(formatCost(run.costUsd));
+    }
+    bits.push(`${((run.durationMs || 0) / 1000).toFixed(1)}s`);
+    bits.forEach((bit, i) => {
+      if (i) {
+        const sep = document.createElement('span');
+        sep.className = 'receipt-sep';
+        sep.textContent = '·';
+        box.appendChild(sep);
+      }
+      const span = document.createElement('span');
+      span.textContent = bit;
+      box.appendChild(span);
+    });
+    return box;
+  }
+
+  function buildUserTurn(turn, isFirst) {
+    const block = turnEl('turn turn-user');
+    const head = turnEl('turn-head');
+    const label = turnEl('turn-label');
+    label.innerHTML = isFirst
+      ? '<i class="fas fa-arrow-right-long" aria-hidden="true"></i> Your input'
+      : '<i class="fas fa-arrow-turn-up" aria-hidden="true"></i> You asked for a change';
+    head.appendChild(label);
+    block.appendChild(head);
+
+    const body = turnEl('turn-body');
+    const text = turnEl('turn-text');
+    text.textContent = turn.display || turn.content;
+    body.appendChild(text);
+    block.appendChild(body);
+    return block;
+  }
+
+  function renderThread({ streaming = false } = {}) {
+    const thread = state.thread;
+    el.workshopThread.innerHTML = '';
+
+    if (!thread) {
+      el.workshopThread.appendChild(buildThreadEmpty());
+      return;
+    }
+
+    thread.messages.forEach((turn, index) => {
+      el.workshopThread.appendChild(turn.role === 'user'
+        ? buildUserTurn(turn, index === 0)
+        : buildAssistantTurn(turn, index));
+    });
+
+    if (streaming) el.workshopThread.appendChild(buildLiveTurn());
+    scrollThread();
+  }
+
+  /* The turn being generated. Until the first token arrives it is a
+     skeleton, because "waiting" and "empty" have to look different. */
+  function buildLiveTurn() {
+    const block = turnEl('turn turn-assistant');
+    const head = turnEl('turn-head');
+    const label = turnEl('turn-label');
+    label.innerHTML = '<i class="fas fa-wand-magic-sparkles" aria-hidden="true"></i> Model';
+    head.appendChild(label);
+    head.appendChild(runStateChip(state.runPhase === 'streaming' ? 'streaming' : 'thinking',
+      state.runPhase === 'streaming' ? 'Streaming' : 'Thinking'));
+    block.appendChild(head);
+
+    const body = turnEl('turn-body');
+    const skeleton = turnEl('thinking-block');
+    skeleton.id = 'live-skeleton';
+    skeleton.appendChild(turnEl('skeleton-line'));
+    skeleton.appendChild(turnEl('skeleton-line'));
+    skeleton.appendChild(turnEl('skeleton-line'));
+    body.appendChild(skeleton);
+
+    const text = turnEl('turn-text is-streaming');
+    text.id = 'live-turn';
+    text.hidden = true;
+    body.appendChild(text);
+
+    block.appendChild(body);
+    return block;
+  }
+
+  function buildThreadEmpty() {
+    const box = turnEl('thread-empty');
+    const list = metaPrompts();
+    const icon = turnEl('empty-state-icon');
+    icon.innerHTML = `<i class="fas fa-${list.length ? 'wand-magic-sparkles' : 'screwdriver-wrench'}"></i>`;
+    box.appendChild(icon);
+
+    const h2 = document.createElement('h2');
+    const p = document.createElement('p');
+    if (!list.length) {
+      h2.textContent = 'No meta-prompts yet';
+      p.textContent = 'A meta-prompt is the prompt that writes your prompts. Create one to start running.';
+      box.appendChild(h2);
+      box.appendChild(p);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn';
+      button.dataset.openPrompt = '';
+      button.dataset.sectionHint = 'workshop';
+      button.innerHTML = '<i class="fas fa-plus"></i> New meta-prompt';
+      box.appendChild(button);
+    } else {
+      const meta = selectedMeta();
+      h2.textContent = meta ? meta.title : 'Pick a meta-prompt';
+      p.textContent = meta
+        ? 'Paste what you want worked on below, then Run. The answer, the receipt and what to do with it all land here.'
+        : 'Press / in the composer to choose which meta-prompt to run.';
+      box.appendChild(h2);
+      box.appendChild(p);
+    }
+    return box;
+  }
+
+  /* Only scrolls when the reader is already at the bottom. Yanking a
+     pane down while someone is reading an earlier turn is worse than
+     not following the stream at all. */
+  function scrollThread(force) {
+    const box = el.threadScroll;
+    if (!box) return;
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+    if (force || atBottom) box.scrollTop = box.scrollHeight;
+  }
+
+  // ─────────────────────────────────────────────
+  // RUNNING
+  // ─────────────────────────────────────────────
 
   /**
-   * One turn of the exchange. With no argument this starts a fresh
-   * thread from the Input pane; with `refineText` it continues the
-   * current one.
+   * One turn of the exchange. With no argument it takes whatever is
+   * in the composer: that starts a thread, or continues one if a
+   * reply is already on screen. There is no second input to keep in
+   * sync, which is what the old refine box was.
    *
    * Every turn is recorded in History as its own run — a refinement
    * costs tokens and can fail exactly like a first attempt, so it
    * earns its own receipt.
    */
-  async function runWorkshop(refineText) {
-    const meta = Cloud.getPrompts().find(p => p.id === state.metaPromptId);
-    if (!meta) { showToast('Pick a meta-prompt first.'); return; }
+  async function runWorkshop() {
+    const meta = selectedMeta();
+    if (!meta) { showToast('Pick a meta-prompt first — press / in the composer.'); return; }
 
     const creds = Settings.readCredentials();
     if (!creds.keys[creds.provider]) {
@@ -1452,26 +2209,36 @@
       return;
     }
 
-    const isRefine = Boolean(refineText && state.thread);
+    const typed = el.workshopInput.value;
+    const isRefine = Boolean(state.thread && threadReplies() > 0);
+    if (isRefine && !typed.trim()) { el.workshopInput.focus(); return; }
+
     if (isRefine) {
-      state.thread.messages.push({ role: 'user', content: refineText });
+      state.thread.messages.push({ role: 'user', content: typed.trim() });
     } else {
-      startThread(meta, el.workshopInput.value);
+      startThread(meta, typed);
     }
 
+    // The composer empties on send, the way a composer should: what
+    // you typed is now visible as a turn, so leaving it in the box
+    // as well would show it twice.
+    el.workshopInput.value = '';
+    autoGrowComposer();
     state.lastRun = null;
-    el.workshopOutputActions.hidden = true;
-    el.workshopReceipt.textContent = 'Running…';
-    if (isPhone()) el.workshopOutputPane.classList.add('is-open');
-    setRunning(true);
+
+    setRunPhase('thinking');
+    announce(isRefine ? 'Sending your change. Waiting for the model.' : `Running ${meta.title}. Waiting for the model.`);
     renderThread({ streaming: true });
-    updateThreadControls();
+    scrollThread(true);
+    renderWorkshopChrome();
 
     const live = document.getElementById('live-turn');
+    const skeleton = document.getElementById('live-skeleton');
     state.abortController = new AbortController();
     const startedAt = Date.now();
     let receipt = null;
     let failure = null;
+    let sawDelta = false;
 
     try {
       receipt = await Runner.run({
@@ -1481,14 +2248,27 @@
         signal: state.abortController.signal,
         onDelta: chunk => {
           if (!live) return;
+          if (!sawDelta) {
+            // The first token: the skeleton has served its purpose.
+            sawDelta = true;
+            state.runPhase = 'streaming';
+            if (skeleton) skeleton.remove();
+            live.hidden = false;
+            const chip = el.workshopThread.querySelector('.run-state');
+            if (chip) {
+              chip.dataset.state = 'streaming';
+              const label = chip.querySelector('span:not(.elapsed)');
+              if (label) label.textContent = 'Streaming';
+            }
+          }
           live.textContent += chunk;
-          el.workshopOutput.scrollTop = el.workshopOutput.scrollHeight;
+          scrollThread();
         }
       });
     } catch (error) {
       failure = error;
     } finally {
-      setRunning(false);
+      setRunPhase('idle');
       state.abortController = null;
     }
 
@@ -1497,96 +2277,136 @@
     if (receipt) {
       state.thread.messages.push({ role: 'assistant', content: receipt.text });
     } else if (isRefine) {
-      /* The refinement never got an answer, so drop it back out of the
-         thread. Leaving it would send the same unanswered turn again
-         on the next attempt and read as a question the model ignored. */
+      /* The refinement never got an answer, so drop it back out of
+         the thread. Leaving it would send the same unanswered turn
+         again on the next attempt and read as a question the model
+         ignored. */
       state.thread.messages.pop();
-    }
-
-    renderThread();
-    updateThreadControls();
-
-    if (failure && !aborted) {
-      const box = document.createElement('div');
-      box.className = 'run-error';
-      const strong = document.createElement('strong');
-      strong.textContent = failure.message || 'The run failed.';
-      box.appendChild(strong);
-      if (failure.hint) {
-        const span = document.createElement('span');
-        span.textContent = failure.hint;
-        box.appendChild(span);
-      }
-      el.workshopOutput.appendChild(box);
-      el.workshopReceipt.textContent = 'Failed';
+      // …and give the user their words back, since the composer was
+      // cleared on send and they are otherwise gone.
+      el.workshopInput.value = typed;
+      autoGrowComposer();
     }
 
     if (aborted) {
-      el.workshopReceipt.textContent = 'Stopped';
+      renderThread();
+      announce('Run stopped.');
       showToast('Run stopped.');
+      renderWorkshopChrome();
+      return;
     }
 
     // A history row is written for success AND failure. A run that
     // errored is exactly the one you want to find later.
-    if (!aborted) {
-      const record = {
-        id: Cloud.newId(),
-        metaPromptId: meta.id,
-        metaPromptTitle: isRefine ? `${meta.title} — refinement` : meta.title,
-        provider: receipt ? receipt.provider : creds.provider,
-        requestedModel: receipt ? receipt.requestedModel : Settings.resolveModel(creds.provider, creds),
-        servedModel: receipt ? receipt.servedModel : '',
-        responseId: receipt ? receipt.responseId : '',
-        promptVersion: receipt ? receipt.promptVersion : Runner.PROMPT_VERSION,
-        input: isRefine ? refineText : el.workshopInput.value,
-        output: receipt ? receipt.text : '',
-        status: receipt ? 'ok' : 'error',
-        errorMessage: failure ? String(failure.message || '') : '',
-        inputTokens: receipt ? receipt.inputTokens : 0,
-        outputTokens: receipt ? receipt.outputTokens : 0,
-        costUsd: receipt ? receipt.costUsd : 0,
-        durationMs: receipt ? receipt.durationMs : Date.now() - startedAt,
-        keep: false,
-        savedPromptId: null,
-        createdAt: Date.now()
-      };
+    const record = {
+      id: Cloud.newId(),
+      metaPromptId: meta.id,
+      metaPromptTitle: isRefine ? `${meta.title} — refinement` : meta.title,
+      provider: receipt ? receipt.provider : creds.provider,
+      requestedModel: receipt ? receipt.requestedModel : Settings.resolveModel(creds.provider, creds),
+      servedModel: receipt ? receipt.servedModel : '',
+      responseId: receipt ? receipt.responseId : '',
+      promptVersion: receipt ? receipt.promptVersion : Runner.PROMPT_VERSION,
+      input: isRefine ? typed.trim() : typed,
+      output: receipt ? receipt.text : '',
+      status: receipt ? 'ok' : 'error',
+      errorMessage: failure ? String(failure.message || '') : '',
+      inputTokens: receipt ? receipt.inputTokens : 0,
+      outputTokens: receipt ? receipt.outputTokens : 0,
+      costUsd: receipt ? receipt.costUsd : 0,
+      durationMs: receipt ? receipt.durationMs : Date.now() - startedAt,
+      keep: false,
+      savedPromptId: null,
+      createdAt: Date.now()
+    };
 
-      try {
-        state.lastRun = await Cloud.saveRun(record);
-      } catch (error) {
-        console.error('[ui] could not record the run', error);
-        state.lastRun = record;
-        showToast('The run finished but could not be saved to History.');
-      }
+    try {
+      state.lastRun = await Cloud.saveRun(record);
+    } catch (error) {
+      console.error('[ui] could not record the run', error);
+      state.lastRun = record;
+      showToast('The run finished but could not be saved to History.');
+    }
+
+    // The receipt is attached to the turn it belongs to, so every
+    // answer keeps its own cost and latency instead of one caption
+    // describing only the most recent.
+    if (receipt) {
+      const last = state.thread.messages[state.thread.messages.length - 1];
+      last.run = state.lastRun;
+    } else {
+      state.thread.messages.push({
+        role: 'assistant',
+        failed: true,
+        content: failure ? (failure.message || 'The run failed.') : 'The run failed.',
+        hint: failure && failure.hint ? failure.hint : '',
+        run: state.lastRun
+      });
     }
 
     if (receipt) {
-      const swapped = receipt.servedModel && receipt.servedModel !== receipt.requestedModel;
-      el.workshopReceipt.textContent = [
-        receipt.servedModel || receipt.requestedModel,
-        `${receipt.inputTokens.toLocaleString()}→${receipt.outputTokens.toLocaleString()} tok`,
-        receipt.priced ? formatCost(receipt.costUsd) : 'unpriced',
-        `${(receipt.durationMs / 1000).toFixed(1)}s`
-      ].join(' · ') + (swapped ? ' (swapped)' : '');
-      el.workshopOutputActions.hidden = false;
-      el.workshopRefineInput.value = '';
+      const words = String(receipt.text || '').trim().split(/\s+/).filter(Boolean).length;
+      announce(`Answer received — about ${words.toLocaleString()} words in ${(receipt.durationMs / 1000).toFixed(1)} seconds.`);
+    } else {
+      announce(`Run failed: ${failure ? failure.message || 'unknown error' : 'unknown error'}`);
     }
 
+    renderThread();
+    scrollThread(true);
+    renderWorkshopChrome();
     render();
   }
 
+  /* Chrome only — the chips, the button label, the hint. Separate
+     from renderWorkshop because that one also rebuilds the thread,
+     and rebuilding the thread from inside a run would throw away the
+     streaming node the run is still writing into. */
+  function renderWorkshopChrome() {
+    const meta = selectedMeta();
+    const creds = Settings.readCredentials();
+    const hasKey = Boolean(creds.keys[creds.provider]);
+    const continuing = Boolean(state.thread && threadReplies() > 0);
+    el.workshopRunLabel.textContent = continuing ? 'Send' : 'Run';
+    el.composerHint.textContent = !metaPrompts().length
+      ? 'Create a meta-prompt to start running.'
+      : !hasKey
+        ? 'Add an API key in Settings to run.'
+        : continuing
+          ? 'Continuing this exchange — the meta-prompt stays fixed.'
+          : 'Press / to switch meta-prompt.';
+    el.composerMetaName.textContent = meta ? meta.title : 'Pick a meta-prompt';
+    updateRunControls();
+  }
 
-  function saveRunOutput(section) {
-    if (!state.lastRun || !state.lastRun.output) return;
-    const meta = Cloud.getPrompts().find(p => p.id === state.lastRun.metaPromptId);
+  /* The composer grows with its content up to the cap in the
+     stylesheet, so a one-line note gets one line and a pasted
+     article gets a scrollbar — rather than both getting the same
+     fixed box, which is what a `rows` attribute buys you. */
+  function autoGrowComposer() {
+    const box = el.workshopInput;
+    if (!box) return;
+    box.style.height = 'auto';
+    box.style.height = `${box.scrollHeight}px`;
+  }
+
+  function turnAt(index) {
+    return state.thread && state.thread.messages[index] ? state.thread.messages[index] : null;
+  }
+
+  function saveTurnOutput(index, section) {
+    const turn = turnAt(index);
+    if (!turn || !turn.content) return;
+    const meta = selectedMeta();
     const id = Cloud.newId();
     const prompt = {
       id,
       title: `${meta ? meta.title : 'Run'} — ${formatDate(Date.now())}`,
-      text: state.lastRun.output,
+      text: turn.content,
       category: '',
       tags: [],
-      notes: `From a ${state.lastRun.servedModel || state.lastRun.requestedModel} run.`,
+      notes: turn.run
+        ? `From a ${turn.run.servedModel || turn.run.requestedModel} run.`
+        : 'From a Workshop run.',
       pinned: false,
       section,
       createdAt: id,
@@ -1600,8 +2420,10 @@
 
     // Linking the run to the saved prompt also exempts it from the
     // retention sweep — you kept the output, so the receipt stays.
-    Cloud.updateRun(state.lastRun.id, { savedPromptId: id })
-      .catch(error => console.error('[ui] could not link run to prompt', error));
+    if (turn.run) {
+      Cloud.updateRun(turn.run.id, { savedPromptId: id })
+        .catch(error => console.error('[ui] could not link run to prompt', error));
+    }
 
     showToast(`Saved to ${SECTION_META[section].title}.`);
     render();
@@ -1625,6 +2447,68 @@
     });
   }
 
+  /* GROUPING
+
+     The list was flat reverse-chron, so a run from ten minutes ago
+     and one from three weeks ago were told apart only by a timestamp
+     you had to stop and read. It is now grouped by day, with the
+     day's totals on the heading — which is the question you actually
+     bring to a run log ("what did today cost?").
+
+     Repeats collapse too. A real History held this, three times in a
+     row and identically:
+
+       Clean Up Prompt — refinement · FAILED · toChatMessages is not defined
+
+     That is one fact reported three times. Consecutive failures with
+     the same message and the same meta-prompt fold into the first
+     row with a count you can expand. Never while selecting, though:
+     a checkbox on a folded row would claim to select runs it does
+     not cover. */
+  function dayKeyOf(ms) {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  }
+
+  function dayLabelOf(ms) {
+    const now = new Date();
+    const then = new Date(ms);
+    if (dayKeyOf(now.getTime()) === dayKeyOf(ms)) return 'Today';
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    if (dayKeyOf(yesterday.getTime()) === dayKeyOf(ms)) return 'Yesterday';
+    const sixDays = now.getTime() - 6 * 86400000;
+    if (ms > sixDays) return then.toLocaleDateString(undefined, { weekday: 'long' });
+    return then.toLocaleDateString(undefined, {
+      month: 'short', day: 'numeric',
+      year: then.getFullYear() === now.getFullYear() ? undefined : 'numeric'
+    });
+  }
+
+  function sameFailure(a, b) {
+    return a.status === 'error' && b.status === 'error' &&
+      (a.errorMessage || '') === (b.errorMessage || '') &&
+      (a.metaPromptTitle || '') === (b.metaPromptTitle || '');
+  }
+
+  function groupRuns(list, collapse) {
+    const sorted = list.slice().sort((a, b) => b.createdAt - a.createdAt);
+    const days = [];
+    sorted.forEach(run => {
+      const key = dayKeyOf(run.createdAt);
+      let day = days[days.length - 1];
+      if (!day || day.key !== key) {
+        day = { key, label: dayLabelOf(run.createdAt), runs: [], entries: [] };
+        days.push(day);
+      }
+      day.runs.push(run);
+
+      const prev = day.entries[day.entries.length - 1];
+      if (collapse && prev && sameFailure(prev.run, run)) prev.repeats.push(run);
+      else day.entries.push({ run, repeats: [] });
+    });
+    return days;
+  }
+
   function renderHistory() {
     const list = filteredRuns();
     el.viewTitle.textContent = 'History';
@@ -1643,23 +2527,72 @@
 
     el.historySelectionBar.hidden = !state.selectMode;
     el.historyList.innerHTML = '';
+    renderHistoryChips();
 
     if (!list.length) {
+      const filtering = Cloud.getRuns().length > 0;
       el.historyList.innerHTML = `
         <div class="empty-state">
           <div class="empty-state-icon"><i class="fas fa-clock-rotate-left"></i></div>
-          <h2>${Cloud.getRuns().length ? 'No runs match these filters' : 'No runs yet'}</h2>
-          <p>${Cloud.getRuns().length ? 'Try widening the date range or clearing a filter.' : 'Every run you make in the Workshop is recorded here — including the ones that fail.'}</p>
+          <h2>${filtering ? 'No runs match these filters' : 'No runs yet'}</h2>
+          <p>${filtering
+            ? 'Try widening the date range or clearing a filter.'
+            : 'Every run you make in the Workshop is recorded here — including the ones that fail.'}</p>
+          ${filtering
+            ? '<button class="btn btn-secondary" type="button" data-action="clear-history-filters"><i class="fas fa-xmark"></i> Clear filters</button>'
+            : ''}
         </div>`;
       updateSelectionCount();
+      staggerRows = false;
       return;
     }
 
-    list.forEach(run => el.historyList.appendChild(createHistoryRow(run)));
+    let row = 0;
+    groupRuns(list, !state.selectMode).forEach(day => {
+      const section = document.createElement('div');
+      section.className = 'run-day';
+
+      const head = document.createElement('div');
+      head.className = 'run-day-head';
+      const h3 = document.createElement('h3');
+      h3.textContent = day.label;
+      const summary = document.createElement('span');
+      summary.className = 'run-day-summary';
+      summary.textContent = dayTotals(day.runs);
+      head.appendChild(h3);
+      head.appendChild(summary);
+      section.appendChild(head);
+
+      day.entries.forEach(entry => {
+        section.appendChild(stagger(createHistoryRow(entry.run, entry.repeats), row++));
+        if (entry.repeats.length && state.expandedRepeats.has(entry.run.id)) {
+          entry.repeats.forEach(repeat => {
+            const node = createHistoryRow(repeat, []);
+            node.classList.add('is-repeat');
+            section.appendChild(stagger(node, row++));
+          });
+        }
+      });
+
+      el.historyList.appendChild(section);
+    });
+
     updateSelectionCount();
+    staggerRows = false;
   }
 
-  function createHistoryRow(run) {
+  function dayTotals(runs) {
+    const cost = runs.reduce((sum, r) => sum + (Number(r.costUsd) || 0), 0);
+    const tokens = runs.reduce((sum, r) => sum + (r.inputTokens || 0) + (r.outputTokens || 0), 0);
+    const failed = runs.filter(r => r.status === 'error').length;
+    const bits = [`${runs.length} ${runs.length === 1 ? 'run' : 'runs'}`];
+    if (failed) bits.push(`${failed} failed`);
+    if (tokens) bits.push(`${tokens.toLocaleString()} tok`);
+    if (cost > 0) bits.push(formatCost(cost));
+    return bits.join(' · ');
+  }
+
+  function createHistoryRow(run, repeats) {
     const row = document.createElement('div');
     row.className = 'history-row' + (state.selectedRunIds.has(run.id) ? ' is-selected' : '');
     row.dataset.runId = run.id;
@@ -1672,6 +2605,8 @@
     const snippet = (run.status === 'error' ? run.errorMessage : run.output) || run.input || '';
     const model = run.servedModel || run.requestedModel || '—';
     const swapped = run.servedModel && run.requestedModel && run.servedModel !== run.requestedModel;
+    const count = (repeats || []).length;
+    const open = state.expandedRepeats.has(run.id);
 
     parts.push(`
       <button class="history-main" type="button" data-run-open="${run.id}">
@@ -1683,7 +2618,7 @@
         </span>
         <span class="history-snippet">${escapeHtml(snippet.replace(/\s+/g, ' ').slice(0, 220))}</span>
         <span class="history-meta">
-          <span>${escapeHtml(formatDateTime(run.createdAt))}</span>
+          <span>${escapeHtml(new Date(run.createdAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))}</span>
           <span>${escapeHtml(model)}${swapped ? ' (swapped)' : ''}</span>
           <span>${run.inputTokens.toLocaleString()}→${run.outputTokens.toLocaleString()} tok</span>
           <span>${escapeHtml(formatCost(run.costUsd))}</span>
@@ -1691,6 +2626,7 @@
         </span>
       </button>
       <div class="history-actions">
+        ${count ? `<button class="repeat-badge" type="button" data-run-repeats="${run.id}" aria-expanded="${open}" title="${open ? 'Fold these back up' : 'This failed ' + (count + 1) + ' times in a row'}">×${count + 1} <i class="fas fa-chevron-${open ? 'up' : 'down'}"></i></button>` : ''}
         <button class="tool-btn${run.keep ? ' pinned' : ''}" data-run-keep="${run.id}" title="${run.keep ? 'Stop keeping' : 'Keep — never auto-delete'}" aria-pressed="${run.keep ? 'true' : 'false'}"><i class="${run.keep ? 'fas' : 'far'} fa-bookmark"></i></button>
         <button class="tool-btn danger" data-run-delete="${run.id}" title="Delete run"><i class="fas fa-trash"></i></button>
       </div>`);
@@ -2229,16 +3165,23 @@
     el.paletteResults.innerHTML = '';
     if (!state.paletteItems.length) {
       el.paletteResults.innerHTML = '<p class="palette-empty">Nothing matches.</p>';
+      el.paletteInput.removeAttribute('aria-activedescendant');
       return;
     }
     state.paletteItems.forEach((item, index) => {
+      const active = index === state.paletteIndex;
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = 'palette-item' + (index === state.paletteIndex ? ' is-active' : '');
+      button.id = `palette-opt-${index}`;
+      button.className = 'palette-item' + (active ? ' is-active' : '');
       button.dataset.paletteIndex = index;
       button.setAttribute('role', 'option');
+      // The visual highlight moves with the arrow keys; without this
+      // the announcement did not move with it.
+      button.setAttribute('aria-selected', String(active));
       const icon = document.createElement('i');
       icon.className = `fas ${item.icon}`;
+      icon.setAttribute('aria-hidden', 'true');
       const label = document.createElement('span');
       label.textContent = item.label;
       const hint = document.createElement('small');
@@ -2248,6 +3191,9 @@
       button.appendChild(hint);
       el.paletteResults.appendChild(button);
     });
+    // Focus stays in the text field; this is what tells a screen
+    // reader which option the field is currently pointing at.
+    el.paletteInput.setAttribute('aria-activedescendant', `palette-opt-${state.paletteIndex}`);
   }
 
   function runPaletteItem(index) {
@@ -2335,6 +3281,7 @@
   });
 
   el.sortSelect.addEventListener('change', () => {
+    animateNextRender();
     state.sort = el.sortSelect.value;
     Settings.writePrefs({ sort: state.sort });
     render();
@@ -2346,6 +3293,9 @@
       Settings.writePrefs({ view: state.view });
       state.expandedIds = new Set();
       updateViewButtons();
+      // Every row is rebuilt in a different shape, so the reveal
+      // reads as the change rather than as decoration.
+      animateNextRender();
       render();
     });
   });
@@ -2425,34 +3375,120 @@
     if (action) action();
   });
 
-  // Workshop
-  el.workshopList.addEventListener('click', event => {
-    const button = event.target.closest('[data-meta-id]');
-    if (!button) return;
-    const next = Number(button.dataset.metaId);
-    // A thread's system message belongs to the meta-prompt that
-    // started it; carrying it onto a different one would answer under
-    // rules the new prompt never set.
-    if (state.thread && state.thread.metaPromptId !== next) endThread();
-    state.metaPromptId = next;
-    renderWorkshop();
+  // Workshop — the composer
+  //
+  // The form owns the submit, so Enter behaviour, the button and the
+  // keyboard shortcut all reach the same place.
+  el.composer.addEventListener('submit', event => {
+    event.preventDefault();
+    if (!state.running) runWorkshop();
   });
 
-  el.workshopRunBtn.addEventListener('click', runWorkshop);
   el.workshopStopBtn.addEventListener('click', () => {
     if (state.abortController) state.abortController.abort();
   });
-  el.workshopInput.addEventListener('input', renderSendPreview);
+
+  el.workshopInput.addEventListener('input', () => {
+    autoGrowComposer();
+    renderSendPreview();
+    updateRunControls();
+
+    // "/" as the first character of an empty composer opens the
+    // picker; anything after it filters. Typed anywhere else it is
+    // just a slash, because prompts contain slashes.
+    const value = el.workshopInput.value;
+    if (value.startsWith('/')) openSlashMenu(value.slice(1));
+    else closeSlashMenu();
+  });
+
+  /* Composer keys. Enter sends and Shift+Enter makes a newline —
+     except while the picker is open, where the keys belong to it. */
+  el.workshopInput.addEventListener('keydown', event => {
+    if (state.slashOpen) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const count = state.slashItems.length;
+        if (!count) return;
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        state.slashIndex = (state.slashIndex + delta + count) % count;
+        renderSlashMenu();
+        return;
+      }
+      if (event.key === 'Enter' && state.slashItems.length) {
+        event.preventDefault();
+        chooseMeta(state.slashItems[state.slashIndex].id);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSlashMenu();
+        return;
+      }
+    }
+
+    if (event.key === 'Enter' && !event.shiftKey && !(event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      if (!el.workshopRunBtn.disabled) el.composer.requestSubmit();
+    }
+  });
+
+  el.composerMetaChip.addEventListener('click', () => {
+    if (state.slashOpen) { closeSlashMenu(); return; }
+    openSlashMenu('');
+    el.workshopInput.focus();
+  });
+
+  el.slashMenu.addEventListener('click', event => {
+    const button = event.target.closest('[data-meta-id]');
+    if (button) chooseMeta(button.dataset.metaId);
+  });
+
+  el.composerModelChip.addEventListener('click', openSettings);
+
+  el.composerPreviewChip.addEventListener('click', () => {
+    state.previewOpen = !state.previewOpen;
+    el.sendPreviewBody.hidden = !state.previewOpen;
+    el.composerPreviewChip.setAttribute('aria-expanded', String(state.previewOpen));
+    el.composerPreviewChip.classList.toggle('is-primary', state.previewOpen);
+  });
 
   el.workshopClearBtn.addEventListener('click', () => {
     el.workshopInput.value = '';
+    autoGrowComposer();
+    closeSlashMenu();
     endThread();
-    renderSendPreview();
+    renderWorkshop();
     el.workshopInput.focus();
   });
-  el.workshopOutputBack.addEventListener('click', () => {
-    el.workshopOutputPane.classList.remove('is-open');
+
+  /* Per-turn actions, delegated: the thread is rebuilt on every
+     render, so binding per button would rebind on every token. */
+  el.workshopThread.addEventListener('click', event => {
+    const button = event.target.closest('[data-turn-action]');
+    if (!button) return;
+    const index = Number(button.dataset.turnIndex);
+    const turn = turnAt(index);
+    if (!turn) return;
+
+    const actions = {
+      // The raw Markdown source, never the rendered HTML.
+      copy: () => copyText(turn.content, 'Output copied.'),
+      'save-library': () => saveTurnOutput(index, 'library'),
+      'save-scratch': () => saveTurnOutput(index, 'scratch'),
+      receipt: () => { if (turn.run) openRunDetail(turn.run.id); }
+    };
+    const action = actions[button.dataset.turnAction];
+    if (action) action();
   });
+
+  // A click anywhere else closes the picker. Pointerdown rather than
+  // click, so it closes before a control underneath acts on it.
+  document.addEventListener('pointerdown', event => {
+    if (!state.slashOpen) return;
+    if (event.target.closest('#slash-menu, #composer-meta-chip, #workshop-input')) return;
+    closeSlashMenu();
+  });
+
   document.querySelectorAll('[data-output-mode]').forEach(button => {
     button.addEventListener('click', () => setOutputMode(button.dataset.outputMode));
   });
@@ -2482,38 +3518,6 @@
     const id = state.promptView.id;
     closeDialog(el.promptViewDialog);
     openPromptEditor(id);
-  });
-
-  el.workshopRefineBtn.addEventListener('click', () => {
-    const text = el.workshopRefineInput.value.trim();
-    if (!text) { el.workshopRefineInput.focus(); return; }
-    runWorkshop(text);
-  });
-
-  // Enter sends, Shift+Enter makes a newline — the refinement box is
-  // for a sentence, not an essay.
-  el.workshopRefineInput.addEventListener('keydown', event => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      el.workshopRefineBtn.click();
-    }
-  });
-
-  el.workshopRestartBtn.addEventListener('click', () => {
-    endThread();
-    renderWorkshop();
-    el.workshopInput.focus();
-  });
-
-  el.workshopCopyBtn.addEventListener('click', () => {
-    // The raw Markdown source, not the rendered HTML.
-    if (state.lastRun) copyText(state.lastRun.output, 'Output copied.');
-  });
-  el.workshopSaveLibraryBtn.addEventListener('click', () => saveRunOutput('library'));
-  el.workshopSaveScratchBtn.addEventListener('click', () => saveRunOutput('scratch'));
-  el.workshopDiscardBtn.addEventListener('click', () => {
-    endThread();
-    el.workshopOutputPane.classList.remove('is-open');
   });
 
   // History
@@ -2564,6 +3568,17 @@
     const open = event.target.closest('[data-run-open]');
     const keep = event.target.closest('[data-run-keep]');
     const remove = event.target.closest('[data-run-delete]');
+    const repeats = event.target.closest('[data-run-repeats]');
+    const clearFilters = event.target.closest('[data-action="clear-history-filters"]');
+
+    if (clearFilters) { clearHistoryFilters(); return; }
+    if (repeats) {
+      const id = Number(repeats.dataset.runRepeats);
+      if (state.expandedRepeats.has(id)) state.expandedRepeats.delete(id);
+      else state.expandedRepeats.add(id);
+      renderHistory();
+      return;
+    }
     if (open) { openRunDetail(Number(open.dataset.runOpen)); return; }
     if (keep) {
       const id = Number(keep.dataset.runKeep);
@@ -2790,6 +3805,9 @@
       openPalette();
       return;
     }
+    /* "/" opens the palette everywhere EXCEPT the Workshop composer,
+       where it opens the meta-prompt picker instead — the composer
+       handles that itself, and `typing` already excludes it here. */
     if (event.key === '/' && !typing && !document.querySelector('dialog[open]')) {
       event.preventDefault();
       openPalette();
@@ -2797,13 +3815,9 @@
     }
     if (meta && event.key === 'Enter' && state.section === 'workshop' && !state.running) {
       event.preventDefault();
-      /* Context-aware: from the refine box the obvious meaning of
-         "send this" is the refinement, not a fresh run that would
-         throw the exchange away. */
-      const inRefine = document.activeElement === el.workshopRefineInput;
-      const refinement = el.workshopRefineInput.value.trim();
-      if (inRefine && refinement && state.thread) runWorkshop(refinement);
-      else runWorkshop();
+      // One composer, so there is no longer a second box whose
+      // contents this had to guess between.
+      if (!el.workshopRunBtn.disabled) el.composer.requestSubmit();
       return;
     }
     if (meta && event.key.toLowerCase() === 's') {
@@ -2814,10 +3828,9 @@
       return;
     }
     if (event.key === 'Escape' && !document.querySelector('dialog[open]')) {
-      if (document.body.classList.contains('sidebar-open')) closeSidebar();
-      else if (el.workshopOutputPane.classList.contains('is-open')) {
-        el.workshopOutputPane.classList.remove('is-open');
-      } else closePromptDetail();
+      if (state.slashOpen) closeSlashMenu();
+      else if (document.body.classList.contains('sidebar-open')) closeSidebar();
+      else closePromptDetail();
     }
   });
 
@@ -2935,6 +3948,8 @@
 
   async function init() {
     applyTheme(prefs.theme);
+    // null is the common case and leaves the responsive default alone.
+    applySplit(prefs.detailWidth);
     el.sortSelect.value = state.sort;
     updateViewButtons();
     setOutputMode(state.outputMode);

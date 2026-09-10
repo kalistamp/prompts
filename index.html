@@ -4,13 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="description" content="Organize, engineer and run reusable AI prompts.">
-    <meta name="theme-color" content="#0b1120">
+    <meta name="theme-color" content="#05090f">
     <meta name="referrer" content="no-referrer">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self' https://cdnjs.cloudflare.com; font-src https://cdnjs.cloudflare.com; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.mistral.ai https://api.cohere.com https://router.huggingface.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self'; font-src 'none'; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.mistral.ai https://api.cohere.com https://router.huggingface.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
     <script>(function(){try{var p=JSON.parse(localStorage.getItem('ps.prefs.v1')||'{}');document.documentElement.setAttribute('data-theme',p.theme==='light'?'light':'dark')}catch(e){}})();</script>
     <link rel="stylesheet" href="style.css?v=7">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" integrity="sha384-3B6NwesSXE7YJlcLI9RpRqGf2p/EgVH8BgoKTaUrmKNDkHPStTQ3EyoYjCGXaOTS" crossorigin="anonymous">
 </head>
 <body>
     <!-- ── AUTH ─────────────────────────────────────────────── -->
@@ -175,10 +174,23 @@
                             <button class="btn toolbar-new-btn" type="button" data-open-prompt><i class="fas fa-plus"></i> New prompt</button>
                         </div>
 
-                        <div class="list-detail-panes">
+                        <div class="list-detail-panes" id="list-detail-panes">
                             <div class="library-panel" aria-label="Prompts">
+                                <!-- Which filters are on, and how to take each
+                                     one off. The controls that set them live in
+                                     the toolbar; nothing there reads back as
+                                     state once you have scrolled past it. -->
+                                <div class="filter-chips" id="library-filter-chips" hidden></div>
                                 <div id="prompts-container"></div>
                             </div>
+
+                            <!-- A window splitter, per the ARIA pattern: focusable,
+                                 with arrow keys and Home/End as well as a drag, so
+                                 the split is not mouse-only. Double-click resets. -->
+                            <div class="pane-resizer" id="pane-resizer" role="separator"
+                                 tabindex="0" aria-orientation="vertical"
+                                 aria-controls="detail-panel"
+                                 aria-label="Resize the reading pane"></div>
 
                             <aside class="detail-panel" id="detail-panel" aria-label="Prompt details">
                                 <div class="detail-empty" id="detail-empty">
@@ -192,70 +204,71 @@
                         </div>
                     </section>
 
-                    <!-- WORKSHOP — three panes on desktop, stacked on phone -->
+                    <!-- WORKSHOP — the run surface: one conversation column
+                         with a docked composer. It was three side-by-side
+                         panes (picker | input | output); the picker cost
+                         280px to list three items, and the "output" pane
+                         carried a second textarea that duplicated the
+                         first. A run is a conversation, so it is laid out
+                         as one. -->
                     <section class="view view-workshop" id="view-workshop" data-view="workshop" hidden>
-                        <div class="workshop-panes">
-                            <div class="workshop-pane workshop-picker">
-                                <div class="pane-head">
-                                    <h2>Meta-prompts</h2>
-                                    <button class="icon-btn" type="button" data-open-prompt data-section-hint="workshop" aria-label="New meta-prompt"><i class="fas fa-plus"></i></button>
-                                </div>
-                                <div id="workshop-list" class="workshop-list"></div>
+                        <div class="run-surface">
+                            <div class="thread-scroll" id="thread-scroll">
+                                <div class="thread" id="workshop-thread"></div>
+                                <div class="thread-live" id="thread-live" role="status" aria-live="polite"></div>
                             </div>
 
-                            <div class="workshop-pane workshop-input">
-                                <div class="pane-head">
-                                    <h2>Input</h2>
-                                    <button class="ghost-btn" type="button" id="view-prompt-btn" title="Read the full meta-prompt"><i class="fas fa-up-right-and-down-left-from-center"></i> View full prompt</button>
-                                    <span class="pane-meta" id="workshop-selected-name">No meta-prompt selected</span>
-                                </div>
-                                <div class="workshop-input-body">
-                                    <label class="sr-only" for="workshop-input">Your rough idea</label>
-                                    <textarea id="workshop-input" placeholder="Paste the rough idea, the excerpt to clean up, or the thing to summarise…"></textarea>
-                                    <details class="send-preview" id="send-preview">
-                                        <summary><span id="send-preview-summary">How this will be sent</span></summary>
-                                        <div class="send-preview-body" id="send-preview-body"></div>
-                                    </details>
-                                    <div class="workshop-run-bar">
-                                        <span class="pane-meta" id="workshop-model-label">—</span>
-                                        <div class="workshop-run-actions">
-                                            <button class="btn btn-secondary" type="button" id="workshop-clear-btn">Clear</button>
-                                            <button class="btn" type="button" id="workshop-run-btn"><i class="fas fa-play"></i> Run <kbd class="btn-kbd" id="run-kbd"></kbd></button>
-                                            <button class="btn btn-danger" type="button" id="workshop-stop-btn" hidden><i class="fas fa-stop"></i> Stop</button>
+                            <form class="composer" id="composer" autocomplete="off">
+                                <div class="composer-context">
+                                    <button class="composer-chip is-primary" type="button" id="composer-meta-chip" aria-haspopup="listbox" aria-expanded="false" aria-controls="slash-menu">
+                                        <i class="fas fa-screwdriver-wrench" aria-hidden="true"></i>
+                                        <span id="composer-meta-name">Pick a meta-prompt</span>
+                                        <i class="fas fa-chevron-down composer-chip-caret" aria-hidden="true"></i>
+                                    </button>
+                                    <button class="composer-chip" type="button" id="composer-model-chip" title="Change provider and model">
+                                        <i class="fas fa-microchip" aria-hidden="true"></i>
+                                        <span id="composer-model-name">—</span>
+                                    </button>
+                                    <button class="composer-chip" type="button" id="composer-preview-chip" aria-expanded="false" aria-controls="send-preview-body">
+                                        <i class="fas fa-code-branch" aria-hidden="true"></i>
+                                        <span id="send-preview-summary">How this is sent</span>
+                                    </button>
+                                    <button class="composer-chip" type="button" id="view-prompt-btn" title="Read the full meta-prompt">
+                                        <i class="fas fa-up-right-and-down-left-from-center" aria-hidden="true"></i>
+                                        <span>Full prompt</span>
+                                    </button>
+                                    <div class="composer-context-end">
+                                        <div class="mode-switch" role="group" aria-label="Output format">
+                                            <button class="mode-btn" type="button" data-output-mode="markdown">Formatted</button>
+                                            <button class="mode-btn" type="button" data-output-mode="raw">Raw</button>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
 
-                            <div class="workshop-pane workshop-output" id="workshop-output-pane">
-                                <div class="pane-head">
-                                    <button class="detail-back workshop-back" type="button" id="workshop-output-back"><i class="fas fa-chevron-left"></i> Input</button>
-                                    <h2>Output</h2>
-                                    <div class="mode-switch" role="group" aria-label="Output format">
-                                        <button class="mode-btn" type="button" data-output-mode="markdown">Formatted</button>
-                                        <button class="mode-btn" type="button" data-output-mode="raw">Raw</button>
+                                <div class="send-preview-body" id="send-preview-body" hidden></div>
+
+                                <div class="composer-field">
+                                    <label class="sr-only" for="workshop-input">Message</label>
+                                    <textarea id="workshop-input" rows="1" placeholder="Paste what you want worked on — press / to pick a meta-prompt."></textarea>
+
+                                    <!-- The meta-prompt picker, reached by typing "/" at the
+                                         start of an empty composer or by the chip above. -->
+                                    <div class="slash-menu" id="slash-menu" role="listbox" aria-label="Meta-prompts" hidden></div>
+
+                                    <div class="composer-actions">
+                                        <span class="composer-hint" id="composer-hint"></span>
+                                        <button class="ghost-btn" type="button" id="workshop-clear-btn" title="Clear the composer and end this exchange">
+                                            <i class="fas fa-eraser" aria-hidden="true"></i> Clear
+                                        </button>
+                                        <button class="btn btn-danger" type="button" id="workshop-stop-btn" hidden><i class="fas fa-stop"></i> Stop</button>
+                                        <button class="btn composer-send" type="submit" id="workshop-run-btn">
+                                            <span class="send-icon" aria-hidden="true"><i class="fas fa-play"></i></span>
+                                            <span id="workshop-run-label">Run</span>
+                                            <kbd class="btn-kbd" id="run-kbd"></kbd>
+                                        </button>
                                     </div>
                                 </div>
-                                <p class="pane-receipt" id="workshop-receipt"></p>
-                                <div class="workshop-output-body">
-                                    <div id="workshop-output" class="workshop-output-text" aria-live="polite"></div>
-                                </div>
-                                <div class="workshop-refine" id="workshop-refine" hidden>
-                                    <label class="sr-only" for="workshop-refine-input">Ask for a change</label>
-                                    <textarea id="workshop-refine-input" rows="2" placeholder="Not quite? Ask for a change — &quot;shorter&quot;, &quot;add an example&quot;, &quot;make it a system prompt&quot;…"></textarea>
-                                    <div class="workshop-refine-actions">
-                                        <span class="pane-meta" id="workshop-turn-count"></span>
-                                        <button class="btn btn-secondary" type="button" id="workshop-restart-btn" title="Discard this exchange and start again">Start over</button>
-                                        <button class="btn" type="button" id="workshop-refine-btn"><i class="fas fa-arrow-turn-up"></i> Send <kbd class="btn-kbd">↵</kbd></button>
-                                    </div>
-                                </div>
-                                <div class="workshop-output-actions" id="workshop-output-actions" hidden>
-                                    <button class="btn" type="button" id="workshop-copy-btn"><i class="fas fa-copy"></i> Copy</button>
-                                    <button class="btn btn-secondary" type="button" id="workshop-save-library-btn"><i class="fas fa-book"></i> Save to Library</button>
-                                    <button class="btn btn-secondary" type="button" id="workshop-save-scratch-btn"><i class="fas fa-note-sticky"></i> Drop to Scratch</button>
-                                    <button class="btn btn-secondary" type="button" id="workshop-discard-btn">Discard</button>
-                                </div>
-                            </div>
+                            </form>
                         </div>
                     </section>
 
@@ -297,6 +310,7 @@
                         </div>
 
                         <div class="history-body">
+                            <div class="filter-chips" id="history-filter-chips" hidden></div>
                             <div id="history-list" class="history-list"></div>
                         </div>
                     </section>
@@ -562,9 +576,17 @@
             <div class="palette-search">
                 <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
                 <label class="sr-only" for="palette-input">Command</label>
-                <input type="text" id="palette-input" placeholder="Jump to a prompt, section or action…" autocomplete="off">
+                <!-- The results carried role="listbox" but the input was
+                     never wired to it: no combobox role, no aria-controls,
+                     and no aria-activedescendant. A listbox that reports
+                     no active option is worse for a screen reader than no
+                     role at all, because it promises navigation that is
+                     not announced. -->
+                <input type="text" id="palette-input" placeholder="Jump to a prompt, section or action…"
+                       autocomplete="off" role="combobox" aria-expanded="true"
+                       aria-controls="palette-results" aria-autocomplete="list">
             </div>
-            <div id="palette-results" class="palette-results" role="listbox"></div>
+            <div id="palette-results" class="palette-results" role="listbox" aria-label="Results"></div>
         </div>
     </dialog>
 

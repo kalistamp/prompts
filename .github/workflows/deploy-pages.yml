@@ -55,6 +55,39 @@ jobs:
           grep -q "rpc('apply_prompt_changes'" cloud.js
           grep -q 'Content-Security-Policy' index.html
 
+          # Icons are local. They used to come from a Font Awesome
+          # stylesheet on cdnjs, which cost a render-blocking
+          # third-party request and two CDN entries in the CSP. They
+          # are now mask-image data URIs in style.css, so nothing may
+          # reintroduce the CDN or the directives that allowed it.
+          if grep -q 'cdnjs.cloudflare.com' index.html style.css; then
+            echo "The icon CDN is back in a deployed file" >&2
+            exit 1
+          fi
+          grep -q "style-src 'self';" index.html
+          grep -q "font-src 'none';" index.html
+
+          # Every icon the markup asks for must have a definition, or
+          # it renders as a blank gap where a control used to be.
+          node -e "
+            const fs = require('fs');
+            const src = fs.readFileSync('index.html', 'utf8') + fs.readFileSync('script.js', 'utf8');
+            const css = fs.readFileSync('style.css', 'utf8');
+            const used = new Set();
+            for (const m of src.matchAll(/\bfa-([a-z0-9-]+)/g)) if (m[1] && m[1] !== 'spin') used.add(m[1]);
+            // Names built by a template literal, e.g. fa-\${dark ? 'sun' : 'moon'}
+            for (const m of src.matchAll(/fa-\\\$\{[^}]*?'([a-z0-9-]+)'\s*:\s*'([a-z0-9-]+)'[^}]*\}/g)) { used.add(m[1]); used.add(m[2]); }
+            for (const m of src.matchAll(/fa-chevron-\\\$\{[^}]*?'([a-z]+)'\s*:\s*'([a-z]+)'/g)) { used.add('chevron-' + m[1]); used.add('chevron-' + m[2]); }
+            used.delete('chevron-');
+            const defined = new Set([...css.matchAll(/^\.fa-([a-z0-9-]+) \{/gm)].map(m => m[1]));
+            const missing = [...used].filter(n => !defined.has(n));
+            if (missing.length) {
+              console.error('Icons used but not defined in style.css: ' + missing.join(', '));
+              process.exit(1);
+            }
+            console.log(used.size + ' icons used, all defined.');
+          "
+
           # No inline event handlers: the script CSP would block them,
           # so a stray onclick is a page that silently does nothing.
           if grep -Eqi 'on(click|change|input|submit)=' index.html script.js; then
@@ -62,20 +95,56 @@ jobs:
             exit 1
           fi
 
-          # Design tokens only. Any raw hex after the :root/[data-theme]
-          # token block (which ends at line 68) fails the build.
-          if tail -n +69 style.css | grep -Eq '#[0-9a-fA-F]{3,8}'; then
-            echo "Raw hex outside the token block in style.css" >&2
-            tail -n +69 style.css | grep -nE '#[0-9a-fA-F]{3,8}' >&2
-            exit 1
-          fi
+          # Design tokens only.
+          #
+          # This used to be `tail -n +69`, a hardcoded line number for
+          # the end of the token block. Two things were wrong with it.
+          # It broke the moment the block grew by a line, and it only
+          # looked for hex — so 17 rgba() values mixed by hand from the
+          # LIGHT primary sat below it for months, unflagged, painting
+          # every hover and focus state the wrong hue in dark mode.
+          #
+          # Now the block ends at a sentinel line, and rgb()/rgba()
+          # count as raw colour too. Below the sentinel, colour comes
+          # from var() or color-mix() or it does not ship.
+          node -e "
+            const fs = require('fs');
+            const css = fs.readFileSync('style.css', 'utf8');
+            const SENT = '/* ===== END DESIGN TOKENS ===== */';
+            const at = css.indexOf(SENT);
+            if (at < 0) {
+              console.error('The END DESIGN TOKENS sentinel is missing from style.css.');
+              process.exit(1);
+            }
+            const before = css.slice(0, at).split('\n').length;
+            const bad = css.slice(at + SENT.length).split('\n')
+              .map((line, i) => [before + i, line])
+              .filter(([, line]) => /#[0-9a-fA-F]{3,8}\b|\brgba?\(/.test(line));
+            if (bad.length) {
+              console.error('Raw colour below the token sentinel in style.css:');
+              bad.forEach(([n, line]) => console.error('  ' + n + ': ' + line.trim()));
+              process.exit(1);
+            }
+            console.log('style.css: no raw colour below the token sentinel.');
+          "
 
           # Colour must come from the two explicit data-theme states,
           # never from the OS preference.
-          if grep -q 'prefers-color-scheme' style.css; then
-            echo "prefers-color-scheme must not decide colour" >&2
-            exit 1
-          fi
+          #
+          # Comments are stripped first. A plain grep here also
+          # matched the token block's own comment explaining the
+          # rule, so the file could not document the constraint it
+          # was subject to — the same self-referential trap the NUL
+          # check above was written to avoid.
+          node -e "
+            const fs = require('fs');
+            const css = fs.readFileSync('style.css', 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+            if (/prefers-color-scheme/.test(css)) {
+              console.error('prefers-color-scheme must not decide colour');
+              process.exit(1);
+            }
+            console.log('style.css: colour comes from data-theme only.');
+          "
 
           # No secret may ever reach the published site. The Supabase
           # publishable key is fine and is expected; a service-role JWT
