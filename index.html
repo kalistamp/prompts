@@ -9,7 +9,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self'; font-src 'none'; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.mistral.ai https://api.cohere.com https://router.huggingface.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
     <script>(function(){try{var p=JSON.parse(localStorage.getItem('ps.prefs.v1')||'{}');document.documentElement.setAttribute('data-theme',p.theme==='light'?'light':'dark')}catch(e){}})();</script>
-    <link rel="stylesheet" href="style.css?v=7">
+    <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
     <!-- ── AUTH ─────────────────────────────────────────────── -->
@@ -571,6 +571,53 @@
         </div>
     </dialog>
 
+    <!-- READING MODE — one answer, the whole viewport.
+
+         An article summary read in the thread is read in a column
+         shared with the composer, the send preview, a receipt and
+         every other turn. On a phone that is most of the screen
+         spent on chrome, and the part you actually came to read is
+         a 200px window you scroll in short bursts.
+
+         A <dialog>, not the Fullscreen API: Safari on iPhone does
+         not implement requestFullscreen on any element, so the
+         browser-chrome version of "full screen" is unavailable on
+         the exact device this is for. showModal() fills the
+         viewport, makes the page behind it inert, and Esc and the
+         back-swipe both behave — which is the whole of what the
+         Fullscreen API would have bought. -->
+    <dialog id="reader-dialog" class="sheet sheet-reader" aria-labelledby="reader-title">
+        <div class="sheet-inner reader-inner">
+            <div class="reader-head">
+                <div class="reader-head-text">
+                    <p class="eyebrow">Reading</p>
+                    <h2 id="reader-title">Output</h2>
+                </div>
+                <!-- The same two buttons as the composer bar and driven
+                     by the same handler, because the composer bar is
+                     not on screen here and the choice has to stay
+                     reachable. -->
+                <div class="mode-switch" role="group" aria-label="Output format">
+                    <button class="mode-btn" type="button" data-output-mode="markdown">Formatted</button>
+                    <button class="mode-btn" type="button" data-output-mode="raw">Raw</button>
+                </div>
+                <button class="icon-btn modal-close-icon" type="button" data-close-dialog aria-label="Close reading mode"><i class="fas fa-xmark"></i></button>
+            </div>
+
+            <!-- Focusable so it can take focus on open: Space, PageDown
+                 and the arrow keys then scroll the text rather than
+                 whichever button the dialog happened to focus first. -->
+            <div class="reader-body" id="reader-body" tabindex="-1">
+                <div id="reader-text"></div>
+            </div>
+
+            <div class="reader-foot">
+                <span class="reader-meta" id="reader-meta"></span>
+                <button class="btn btn-secondary" type="button" id="reader-copy"><i class="fas fa-copy"></i> Copy</button>
+            </div>
+        </div>
+    </dialog>
+
     <dialog id="palette-dialog" class="palette" aria-label="Command palette">
         <div class="palette-inner">
             <div class="palette-search">
@@ -591,12 +638,12 @@
     </dialog>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4" integrity="sha384-yiVMs0R/Jyz7OhoXa/DsEMUSBLjEhr/QJta2ONO+zB6I8/GmNg/7AUFrZmAJV7KV" crossorigin="anonymous"></script>
-    <script src="./supabase-config.js?v=7"></script>
-    <script src="./settings.js?v=7"></script>
-    <script src="./cloud.js?v=7"></script>
-    <script src="./diff.js?v=7"></script>
-    <script src="./markdown.js?v=7"></script>
-    <script src="./runner.js?v=7"></script>
-    <script src="./script.js?v=7"></script>
+    <script src="./supabase-config.js?v=8"></script>
+    <script src="./settings.js?v=8"></script>
+    <script src="./cloud.js?v=8"></script>
+    <script src="./diff.js?v=8"></script>
+    <script src="./markdown.js?v=8"></script>
+    <script src="./runner.js?v=8"></script>
+    <script src="./script.js?v=8"></script>
 </body>
 </html>

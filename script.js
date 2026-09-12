@@ -63,6 +63,11 @@
     promptView: null,
     promptViewMode: 'markdown',
 
+    // Reading mode — the index of the turn being read full screen,
+    // or null. An index rather than a copy of the text, so a reopened
+    // reader cannot show a stale answer.
+    readerIndex: null,
+
     // History
     selectMode: false,
     selectedRunIds: new Set(),
@@ -179,6 +184,13 @@
     promptViewBody: $('prompt-view-body'),
     promptViewCopy: $('prompt-view-copy'),
     promptViewEdit: $('prompt-view-edit'),
+
+    readerDialog: $('reader-dialog'),
+    readerTitle: $('reader-title'),
+    readerBody: $('reader-body'),
+    readerText: $('reader-text'),
+    readerMeta: $('reader-meta'),
+    readerCopy: $('reader-copy'),
 
     historyRange: $('history-range'),
     historyProvider: $('history-provider'),
@@ -552,6 +564,13 @@
     });
 
     closeSidebar();
+    /* The reading pane is a full-screen overlay on a phone, and
+       `is-open` is a class on the panel rather than a fact derived
+       from state.selectedPromptId — which this function has just
+       cleared. Leaving it set meant coming back to a section and
+       finding the empty "Select a prompt" panel covering the list,
+       with no Back button on it to get out. */
+    closePromptDetail();
     animateNextRender();
     render();
   }
@@ -1326,8 +1345,20 @@
       revision: 0
     });
 
+    /* Same rule the picker applies: a thread's system message belongs
+       to the meta-prompt that started it, so pointing the composer at
+       a different one ends the exchange rather than carrying it over
+       and answering under rules the new prompt never set. */
+    if (state.thread && state.thread.metaPromptId !== newId) endThread();
     state.metaPromptId = newId;
-    render();
+
+    /* And then GO there. The copy exists to be run, and leaving the
+       user in Library looking at the original — which is unchanged,
+       so nothing on screen moved — read as the button having done
+       nothing at all. On a phone, where Workshop is a tab away
+       behind the tab bar, that was the whole of the feedback.
+       setSection re-renders, so the render() this replaced is gone. */
+    setSection('workshop');
     showToast(`Copied to Workshop. The original stays in ${SECTION_META[source.section].title}.`);
   }
 
@@ -1871,6 +1902,10 @@
     });
   }
 
+  /* One setting, three places that show it: the composer bar, the
+     reader's own header, and every rendered turn. The buttons are
+     found by attribute rather than by id so the reader's pair is
+     picked up without a second handler to keep in step. */
   function setOutputMode(mode) {
     state.outputMode = mode === 'raw' ? 'raw' : 'markdown';
     Settings.writePrefs({ outputMode: state.outputMode });
@@ -1880,6 +1915,7 @@
       button.setAttribute('aria-pressed', String(active));
     });
     renderThread();
+    if (el.readerDialog.open) renderReader();
   }
 
   // ─────────────────────────────────────────────
@@ -1916,6 +1952,63 @@
       button.setAttribute('aria-pressed', String(active));
     });
   }
+
+  // ─────────────────────────────────────────────
+  // READING MODE
+  // ─────────────────────────────────────────────
+
+  /* One answer, the whole viewport.
+
+     An article summary is a document, and in the thread it is read
+     through a slot between the turn above it and the composer below
+     it. On a phone that slot is a few hundred pixels of a screen
+     whose other half is chrome. This hands the viewport to a single
+     turn: no composer, no receipt, no neighbouring turns, a reading
+     measure and type a size up.
+
+     Deliberately NOT the Fullscreen API. Safari on iPhone implements
+     requestFullscreen on no element at all, so on the device this
+     was asked for it would silently do nothing. A modal <dialog>
+     fills the viewport, makes the rest of the page inert, and gets
+     Esc and focus containment from the platform.
+
+     The turn is held by index, not by value: the same index, read
+     twice, is the same live turn — and a turn's `run` receipt is
+     attached after the answer arrives, so a snapshot taken at open
+     time would go stale while the reader was on screen. */
+  function openReader(index) {
+    const turn = turnAt(index);
+    // Nothing to read in a failure: the error sits in the thread with
+    // its hint, which is where it is actionable.
+    if (!turn || turn.failed || !turn.content) return;
+    state.readerIndex = index;
+    renderReader();
+    openDialog(el.readerDialog, el.readerBody);
+  }
+
+  function renderReader() {
+    if (state.readerIndex === null) return;
+    const turn = turnAt(state.readerIndex);
+    // The exchange can end underneath an open reader — Clear, or a
+    // meta-prompt swap. Close rather than paint a turn that is gone.
+    if (!turn || !turn.content) { closeDialog(el.readerDialog); return; }
+
+    el.readerTitle.textContent = (state.thread && state.thread.metaPromptTitle) || 'Output';
+    paintText(el.readerText, turn.content, state.outputMode);
+    el.readerMeta.textContent = counts(turn.content);
+  }
+
+  el.readerCopy.addEventListener('click', () => {
+    const turn = turnAt(state.readerIndex);
+    // The Markdown source, never the rendered HTML — the same rule
+    // the per-turn Copy follows.
+    if (turn && turn.content) copyText(turn.content, 'Output copied.');
+  });
+
+  // Esc, the backdrop and the close button all end at the same place,
+  // so the index is cleared on `close` rather than in a handler that
+  // only one of the three routes reaches.
+  el.readerDialog.addEventListener('close', () => { state.readerIndex = null; });
 
   /* THE EXCHANGE
 
@@ -1955,6 +2048,9 @@
     state.lastRun = null;
     renderThread();
     updateRunControls();
+    // A reader must not outlive the turn it is reading. renderReader
+    // closes itself when the turn is gone; this is what reaches it.
+    if (el.readerDialog.open) renderReader();
   }
 
   // ─────────────────────────────────────────────
@@ -2030,6 +2126,8 @@
 
     if (!turn.failed) {
       const actions = turnEl('turn-actions');
+      // First, because on a phone reading it is what you came to do.
+      actions.appendChild(turnAction('fa-up-right-and-down-left-from-center', 'Read', 'read', index));
       actions.appendChild(turnAction('fa-copy', 'Copy', 'copy', index));
       actions.appendChild(turnAction('fa-book', 'Save to Library', 'save-library', index));
       actions.appendChild(turnAction('fa-note-sticky', 'Drop to Scratch', 'save-scratch', index));
@@ -2219,6 +2317,18 @@
       startThread(meta, typed);
     }
 
+    /* The exchange this run belongs to, held by reference for the
+       rest of the function. A run is awaited, and the thread can be
+       ended underneath it while it is in flight — Clear does it, and
+       so does copying a prompt into Workshop from another section.
+       Reading state.thread after the await then finds null and the
+       answer lands on a TypeError. Writing into the captured object
+       instead cannot throw: if it is still the current thread the
+       turn appears, and if it is not, the object is orphaned and the
+       answer is dropped — but the History row is still written, so
+       the tokens that were spent are still accounted for. */
+    const thread = state.thread;
+
     // The composer empties on send, the way a composer should: what
     // you typed is now visible as a turn, so leaving it in the box
     // as well would show it twice.
@@ -2242,8 +2352,8 @@
 
     try {
       receipt = await Runner.run({
-        system: state.thread.system,
-        messages: state.thread.messages,
+        system: thread.system,
+        messages: thread.messages,
         maxTokens: Cloud.getSettings().defaultMaxTokens,
         signal: state.abortController.signal,
         onDelta: chunk => {
@@ -2275,17 +2385,21 @@
     const aborted = failure && failure.name === 'AbortError';
 
     if (receipt) {
-      state.thread.messages.push({ role: 'assistant', content: receipt.text });
+      thread.messages.push({ role: 'assistant', content: receipt.text });
     } else if (isRefine) {
       /* The refinement never got an answer, so drop it back out of
          the thread. Leaving it would send the same unanswered turn
          again on the next attempt and read as a question the model
          ignored. */
-      state.thread.messages.pop();
+      thread.messages.pop();
       // …and give the user their words back, since the composer was
-      // cleared on send and they are otherwise gone.
-      el.workshopInput.value = typed;
-      autoGrowComposer();
+      // cleared on send and they are otherwise gone. Only if the
+      // exchange is still the one on screen — pushing them back into
+      // a composer the user has since cleared would undo the clear.
+      if (state.thread === thread) {
+        el.workshopInput.value = typed;
+        autoGrowComposer();
+      }
     }
 
     if (aborted) {
@@ -2332,10 +2446,10 @@
     // answer keeps its own cost and latency instead of one caption
     // describing only the most recent.
     if (receipt) {
-      const last = state.thread.messages[state.thread.messages.length - 1];
+      const last = thread.messages[thread.messages.length - 1];
       last.run = state.lastRun;
     } else {
-      state.thread.messages.push({
+      thread.messages.push({
         role: 'assistant',
         failed: true,
         content: failure ? (failure.message || 'The run failed.') : 'The run failed.',
@@ -3471,6 +3585,7 @@
     if (!turn) return;
 
     const actions = {
+      read: () => openReader(index),
       // The raw Markdown source, never the rendered HTML.
       copy: () => copyText(turn.content, 'Output copied.'),
       'save-library': () => saveTurnOutput(index, 'library'),

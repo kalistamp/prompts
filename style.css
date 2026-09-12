@@ -4632,6 +4632,133 @@ dialog.palette::backdrop {
     .send-preview-open { align-self: stretch; justify-content: center; }
 }
 
+/* ============================================================
+   READING MODE — one output, the whole viewport
+
+   Everything here is an ID selector on purpose. The generic .sheet
+   rules, and the phone block that turns every sheet into a 92dvh
+   bottom sheet with rounded top corners, both have to lose: this
+   one is edge to edge and floor to ceiling, which is the point.
+   ============================================================ */
+/* Filled by inset rather than by a viewport unit. 100vw counts the
+   page's scrollbar and overhangs on a desktop; 100dvh is right on
+   iOS but has to be paired with a matching width unit to stay
+   square. A fixed box with inset:0 and auto sizing is exactly its
+   containing block on both, and it is what .detail-panel already
+   does for the phone reading pane two screens away. */
+dialog#reader-dialog {
+    position: fixed;
+    inset: 0;
+    width: auto;
+    height: auto;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+}
+
+#reader-dialog .sheet-inner {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    gap: 0;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: var(--bg);
+    box-shadow: none;
+    overflow: hidden;
+}
+
+/* ---- Header: title, format, close -------------------------- */
+#reader-dialog .reader-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--s4);
+    padding: max(var(--s4), env(safe-area-inset-top)) max(var(--s5), env(safe-area-inset-right)) var(--s4) max(var(--s5), env(safe-area-inset-left));
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+}
+
+/* The title has to be the thing that gives way, or a long
+   meta-prompt name pushes the close button off a 390px screen. */
+#reader-dialog .reader-head-text {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+#reader-dialog .reader-head-text h2 {
+    font-size: 1rem;
+    letter-spacing: -0.02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#reader-dialog .mode-switch { flex: none; margin-left: 0; }
+#reader-dialog .modal-close-icon { flex: none; }
+
+/* ---- The text ---------------------------------------------- */
+#reader-dialog .reader-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    padding: var(--s7) max(var(--s6), env(safe-area-inset-right)) var(--s8) max(var(--s6), env(safe-area-inset-left));
+}
+
+#reader-dialog .reader-body:focus { outline: none; }
+
+/* paintText owns this node's class list — it writes "turn-text" or
+   "turn-text is-rendered" over whatever was there — so the reading
+   treatment is hung off the container, not off a class of our own
+   that the next repaint would wipe. */
+#reader-dialog .turn-text {
+    max-width: var(--measure);
+    margin-inline: auto;
+    font-size: 0.92rem;
+    line-height: 1.72;
+}
+
+#reader-dialog .turn-text.is-rendered {
+    font-size: 1.03rem;
+    line-height: 1.78;
+}
+
+#reader-dialog .turn-text.is-rendered pre code { font-size: 0.86rem; }
+
+/* ---- Footer: what it is, and one way out of it -------------- */
+#reader-dialog .reader-foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--s4);
+    padding: var(--s3) max(var(--s5), env(safe-area-inset-right)) max(var(--s3), env(safe-area-inset-bottom)) max(var(--s5), env(safe-area-inset-left));
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+}
+
+#reader-dialog .reader-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 0.75rem;
+    color: var(--fg-subtle);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#reader-dialog .reader-foot .btn { flex: none; }
+
+@media (max-width: 699px) {
+    #reader-dialog .reader-head { gap: var(--s3); }
+    #reader-dialog .reader-head-text .eyebrow { display: none; }
+    #reader-dialog .reader-body { padding-top: var(--s5); }
+}
+
 /* ---- Shortcut badge on a button ---------------------------- */
 .btn-kbd {
     margin-left: 2px;
