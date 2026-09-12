@@ -4530,6 +4530,22 @@ dialog.palette::backdrop {
 }
 
 /* ---- Copy button on a fenced block ------------------------- */
+/* Always there, on every pointer.
+
+   It used to be opacity:0 until you hovered the block, with a
+   `@media (hover: none)` rule handing it back to touch. That bought
+   a clean reading surface at the price of the control existing at
+   all: on a desktop nothing on screen suggested a fenced block
+   could be copied, so the button was only ever found by accident.
+   Worse on an iPad with a trackpad, which reports hover:hover — the
+   button was invisible AND unreachable, because hovering is not
+   something a finger can do.
+
+   The two states are carried by colour instead, which is legible at
+   rest and hides nothing: quiet --fg-subtle against the sunken
+   block, stepping up to --fg on hover. The model's answer is very
+   often a prompt or a snippet meant to be lifted whole, which is
+   the reason this button exists — it should not be a secret. */
 .code-copy {
     position: absolute;
     top: 7px;
@@ -4543,18 +4559,16 @@ dialog.palette::backdrop {
     background: var(--surface);
     color: var(--fg-subtle);
     cursor: pointer;
-    opacity: 0;
-    transition: opacity var(--fast) var(--ease);
+    transition: color var(--fast) var(--ease), border-color var(--fast) var(--ease);
 }
 
-.turn-text.is-rendered pre:hover .code-copy,
-.code-copy:focus-visible { opacity: 1; }
 .code-copy:hover { color: var(--fg); border-color: var(--border-strong); }
 
-/* Touch has no hover, so the button is simply always there. */
-@media (hover: none) {
-    .code-copy { opacity: 1; }
-}
+/* A permanently visible button sits over the top-right corner of the
+   block, so the first line gets room rather than running under it.
+   The block scrolls its own overflow, and the button does not scroll
+   with it — without this, line one slides beneath the chip. */
+.turn-text.is-rendered pre { padding-right: 68px; }
 
 /* ---- Full prompt viewer ------------------------------------ */
 .prompt-view-body {
