@@ -1771,9 +1771,9 @@
      everything else the whole call is one silent wait. The longest
      recorded run in History is 28.8s. All the app used to show for
      that was the word "Running…" in a caption, which is the same
-     thing a hung request looks like. Now it shows a state, a live
-     clock and a three-line skeleton, so a slow answer is legibly
-     different from a broken one. */
+     thing a hung request looks like. Now it shows a live clock, a
+     breathing orb, and a label that moves with the clock, so a slow
+     answer is legibly different from a broken one. */
   /* Run state, spoken.
 
      The thread itself is deliberately NOT an aria-live region: it
@@ -1816,14 +1816,49 @@
     state.elapsedTimer = null;
   }
 
+  /* THE WAIT, IN WORDS
+
+     The clock was already honest and already useless on its own: at
+     four seconds and at forty it reads the same way, a number next
+     to the fixed word "Thinking". On the eight providers that do not
+     stream there is nothing else on screen, so a slow call and a
+     hung one are the same picture.
+
+     The word now moves with the clock. It does not claim to know
+     which of the two is happening — nothing here can know that —
+     only that this run has passed the point where the answer would
+     usually have landed, which is the fact a person needs to decide
+     whether to keep waiting or press Stop.
+
+     Descending, so `find` returns the first rung the clock has
+     passed. The 0 rung is what guarantees a match. */
+  const WAIT_LADDER = [
+    [45, 'Still going'],
+    [20, 'Taking a while'],
+    [8, 'Still thinking'],
+    [0, 'Thinking']
+  ];
+
   /* Written straight into the node rather than through a re-render:
      ten times a second through renderThread would rebuild the whole
      exchange, and a rebuild mid-stream loses the caret position and
      the scroll. */
   function paintElapsed() {
-    const node = el.workshopThread.querySelector('.run-state .elapsed');
-    if (!node) return;
-    node.textContent = `${((Date.now() - state.runStartedAt) / 1000).toFixed(1)}s`;
+    const chip = el.workshopThread.querySelector('.run-state');
+    if (!chip) return;
+
+    const seconds = (Date.now() - state.runStartedAt) / 1000;
+    const clock = chip.querySelector('.elapsed');
+    if (clock) clock.textContent = `${seconds.toFixed(1)}s`;
+
+    /* Only the silent wait gets the ladder. Once tokens are arriving
+       the label belongs to the stream, and the answer appearing on
+       screen is its own proof that nothing is stuck. */
+    if (state.runPhase !== 'thinking') return;
+    const label = chip.querySelector('span:not(.elapsed)');
+    const rung = WAIT_LADDER.find(([at]) => seconds >= at)[1];
+    // Ten times a second, so only write when it actually changed.
+    if (label && label.textContent !== rung) label.textContent = rung;
   }
 
   function updateRunControls() {
@@ -2210,8 +2245,8 @@
     scrollThread();
   }
 
-  /* The turn being generated. Until the first token arrives it is a
-     skeleton, because "waiting" and "empty" have to look different. */
+  /* The turn being generated. Until the first token arrives it is an
+     orb, because "waiting" and "empty" have to look different. */
   function buildLiveTurn() {
     const block = turnEl('turn turn-assistant');
     const head = turnEl('turn-head');
@@ -2223,12 +2258,10 @@
     block.appendChild(head);
 
     const body = turnEl('turn-body');
-    const skeleton = turnEl('thinking-block');
-    skeleton.id = 'live-skeleton';
-    skeleton.appendChild(turnEl('skeleton-line'));
-    skeleton.appendChild(turnEl('skeleton-line'));
-    skeleton.appendChild(turnEl('skeleton-line'));
-    body.appendChild(skeleton);
+    const orb = turnEl('thinking-orb');
+    orb.id = 'live-orb';
+    orb.appendChild(turnEl('orb-core'));
+    body.appendChild(orb);
 
     const text = turnEl('turn-text is-streaming');
     text.id = 'live-turn';
@@ -2343,7 +2376,7 @@
     renderWorkshopChrome();
 
     const live = document.getElementById('live-turn');
-    const skeleton = document.getElementById('live-skeleton');
+    const orb = document.getElementById('live-orb');
     state.abortController = new AbortController();
     const startedAt = Date.now();
     let receipt = null;
@@ -2359,10 +2392,10 @@
         onDelta: chunk => {
           if (!live) return;
           if (!sawDelta) {
-            // The first token: the skeleton has served its purpose.
+            // The first token: the orb has served its purpose.
             sawDelta = true;
             state.runPhase = 'streaming';
-            if (skeleton) skeleton.remove();
+            if (orb) orb.remove();
             live.hidden = false;
             const chip = el.workshopThread.querySelector('.run-state');
             if (chip) {
