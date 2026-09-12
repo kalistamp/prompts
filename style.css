@@ -1523,25 +1523,10 @@ textarea {
     transform: translateY(-2px);
 }
 
-/* The row tools were five always-on buttons per row. At 27 rows that
-   is 135 icon buttons competing with the titles they sit beside.
-   They fade in on hover, and on focus-within so the keyboard path is
-   unaffected — a tabbing user never meets a hidden control. */
-/* Fading each button rather than the .item-tools row: opacity on a
-   parent clamps its children, so a rule lifting the pinned star back
-   to 1 inside a 0-opacity row would do nothing at all. */
-@media (hover: hover) and (min-width: 700px) {
-    .prompt-item .item-tools > *:not(.pin-btn.pinned) {
-        opacity: 0;
-        transition: opacity var(--dur-2) var(--ease-out);
-    }
-
-    .prompt-item:hover .item-tools > *,
-    .prompt-item:focus-within .item-tools > *,
-    .prompt-item.is-selected .item-tools > * {
-        opacity: 1;
-    }
-}
+/* The row tools (pin, copy, edit, delete) are always visible. They
+   used to be opacity:0 until the row was hovered, which left a copy
+   button that worked but could not be seen — a control you find by
+   accident is not a control. */
 
 .view-compact .prompt-item {
     padding: 11px 13px;
