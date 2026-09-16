@@ -164,8 +164,17 @@
   }
 
   /* Normalises a turn list into the role/content pairs every vendor
-     accepts. A conversation must start with a user turn and must not
-     carry an empty one — several of these APIs reject both outright. */
+     accepts. A conversation must start with a user turn, must not
+     carry an empty one, and must alternate — several of these APIs
+     reject each of the three outright.
+
+     Alternation is the one that started mattering once the caller
+     stopped sending failed turns back. A run that errors leaves a
+     turn in the thread that is shown but not sent, so what arrives
+     here can be two user messages in a row: your question, the
+     failure, then the change you asked for next. They are joined
+     rather than dropped, because both are things you actually said
+     and the second rarely makes sense without the first. */
   function toChatMessages(messages) {
     const turns = (Array.isArray(messages) ? messages : [])
       .filter(m => m && (m.role === 'user' || m.role === 'assistant'))
@@ -176,7 +185,16 @@
     if (turns[0].role !== 'user') {
       turns.unshift({ role: 'user', content: '(no additional input)' });
     }
-    return turns;
+
+    return turns.reduce((out, turn) => {
+      const previous = out[out.length - 1];
+      if (previous && previous.role === turn.role) {
+        previous.content += `\n\n${turn.content}`;
+        return out;
+      }
+      out.push(turn);
+      return out;
+    }, []);
   }
 
   // ─────────────────────────────────────────────

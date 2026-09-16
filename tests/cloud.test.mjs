@@ -81,10 +81,10 @@ function stubFetch(harnessed, body, { ok = true, status = 200 } = {}) {
 }
 
 // ─────────────────────────────────────────────
-// SETTINGS — credentials never leave the browser
+// SETTINGS — where a credential is written
 // ─────────────────────────────────────────────
 
-test('credentials round-trip through localStorage only', () => {
+test('credentials round-trip through exactly one localStorage key', () => {
   const { Settings, store } = harness();
 
   Settings.writeCredentials({
@@ -139,6 +139,132 @@ test('credentials left by the pre-Supabase version are dropped on read', () => {
   const after = JSON.parse(store.get('ps.credentials.v1'));
   assert.equal(after.githubToken, undefined);
   assert.equal(after.gistId, undefined);
+});
+
+// ─────────────────────────────────────────────
+// SETTINGS — the copy that travels between devices
+// ─────────────────────────────────────────────
+
+test('credentialsPayload carries only what is set', () => {
+  const { Settings } = harness();
+  Settings.writeCredentials({
+    provider: 'groq',
+    effort: 'high',
+    keys: { anthropic: 'sk-ant-one', groq: 'gsk_two' },
+    models: { anthropic: 'claude-opus-5' }
+  });
+
+  const payload = plain(Settings.credentialsPayload());
+  assert.deepEqual(payload.keys, { anthropic: 'sk-ant-one', groq: 'gsk_two' });
+  // A provider never configured takes no room in the row — and, more
+  // to the point, cannot come back down as "" and blank another
+  // device's key.
+  assert.deepEqual(payload.models, { anthropic: 'claude-opus-5' });
+  assert.equal(payload.provider, 'groq');
+  assert.equal(payload.effort, 'high');
+});
+
+test('a blank device adopts the whole stored setup', () => {
+  const { Settings } = harness();
+  const result = Settings.adoptCredentials({
+    provider: 'groq', effort: 'low',
+    keys: { groq: 'gsk_from-the-row' },
+    models: { groq: 'llama-3.3-70b-versatile' }
+  });
+
+  assert.equal(result.adopted, 1);
+  const creds = Settings.readCredentials();
+  assert.equal(creds.keys.groq, 'gsk_from-the-row');
+  assert.equal(creds.models.groq, 'llama-3.3-70b-versatile');
+  assert.equal(creds.provider, 'groq', 'a device with nothing set follows the row');
+  assert.equal(creds.effort, 'low');
+});
+
+test('adopting never overwrites a key this device already has', () => {
+  const { Settings } = harness();
+  Settings.writeCredentials({ provider: 'anthropic', keys: { anthropic: 'sk-ant-local' } });
+
+  const result = Settings.adoptCredentials({
+    provider: 'groq', effort: 'max',
+    keys: { anthropic: 'sk-ant-from-the-row', groq: 'gsk_new' }
+  });
+
+  const creds = Settings.readCredentials();
+  assert.equal(creds.keys.anthropic, 'sk-ant-local',
+    'silently swapping a key would change which account gets billed');
+  assert.equal(creds.keys.groq, 'gsk_new', 'an empty slot is still filled');
+  assert.equal(result.adopted, 1, 'only the slot that was empty counts as adopted');
+  assert.equal(creds.provider, 'anthropic',
+    'a configured device keeps its active provider');
+  assert.equal(creds.effort, '', 'and its effort');
+});
+
+test('an empty or missing row cannot wipe the local keys', () => {
+  const { Settings } = harness();
+  Settings.writeCredentials({ provider: 'anthropic', keys: { anthropic: 'sk-ant-local' } });
+
+  [null, undefined, {}, { keys: {} }, { keys: { anthropic: '' } }].forEach(remote => {
+    const result = Settings.adoptCredentials(remote);
+    assert.equal(result.changed, false, `${JSON.stringify(remote)} must be a no-op`);
+    assert.equal(Settings.readCredentials().keys.anthropic, 'sk-ant-local');
+  });
+});
+
+test('countKeys counts configured providers, not empty slots', () => {
+  const { Settings } = harness();
+  assert.equal(Settings.countKeys(), 0);
+  Settings.writeCredentials({ keys: { anthropic: 'sk-ant-x', openai: '', groq: 'gsk_y' } });
+  assert.equal(Settings.countKeys(), 2);
+});
+
+// ─────────────────────────────────────────────
+// CLOUD — the stored credential row
+// ─────────────────────────────────────────────
+
+test('rememberKeys defaults on, so an older row is not read as an opt-out', () => {
+  const { Cloud } = harness();
+  assert.equal(Cloud.normalizeSettings({}).rememberKeys, true);
+  assert.equal(Cloud.normalizeSettings({ scratchRetentionDays: 7 }).rememberKeys, true);
+  assert.equal(Cloud.normalizeSettings({ rememberKeys: false }).rememberKeys, false);
+});
+
+test('turning rememberKeys off drops the stored credentials on the way through', () => {
+  const { Cloud } = harness();
+  const stored = { provider: 'anthropic', keys: { anthropic: 'sk-ant-x' } };
+
+  assert.ok(Cloud.normalizeSettings({ credentials: stored }).credentials);
+  assert.equal(Cloud.normalizeSettings({ rememberKeys: false, credentials: stored }).credentials, null,
+    'the opt-out must erase, not merely stop writing');
+});
+
+test('a hand-edited credentials blob is re-checked before it is trusted', () => {
+  const { Cloud } = harness();
+  const settings = Cloud.normalizeSettings({
+    credentials: {
+      provider: 'anthropic',
+      effort: 'high',
+      keys: {
+        anthropic: '  sk-ant-padded  ',
+        'DROP TABLE': 'nope',          // not a provider-shaped id
+        groq: 42,                      // not a string
+        cohere: '   ',                 // empty once trimmed
+        mistral: 'x'.repeat(600)       // beyond any real key length
+      },
+      models: { anthropic: 'claude-opus-5' }
+    }
+  });
+
+  assert.deepEqual(plain(settings.credentials.keys), { anthropic: 'sk-ant-padded' });
+  assert.deepEqual(plain(settings.credentials.models), { anthropic: 'claude-opus-5' });
+  assert.equal(settings.credentials.effort, 'high');
+});
+
+test('a row that has never held a key reads back as null, not as an empty shell', () => {
+  const { Cloud } = harness();
+  assert.equal(Cloud.normalizeSettings({}).credentials, null);
+  assert.equal(Cloud.normalizeSettings({ credentials: {} }).credentials, null);
+  assert.equal(Cloud.normalizeSettings({ credentials: { keys: {} } }).credentials, null);
+  assert.equal(Cloud.normalizeSettings({ credentials: 'sk-ant-nope' }).credentials, null);
 });
 
 test('prefs default to dark and reject unknown values', () => {
@@ -582,6 +708,73 @@ test('no element is looked up and then never used', async () => {
 });
 
 // ─────────────────────────────────────────────
+// SCRIPT — the wrapper blockquote a model adds
+// ─────────────────────────────────────────────
+
+/* script.js is one IIFE with no exports, so the function is lifted
+   out of the shipped source and run, rather than copied into the
+   test where the two would drift. */
+async function loadStripWrapperQuote() {
+  const source = await readFile(new URL('../script.js', import.meta.url), 'utf8');
+  const start = source.indexOf('function stripWrapperQuote(');
+  assert.ok(start > -1, 'stripWrapperQuote is gone from script.js');
+
+  // Brace-match from the body's opening brace to its close.
+  let depth = 0;
+  let end = -1;
+  for (let i = source.indexOf('{', start); i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') { depth -= 1; if (!depth) { end = i + 1; break; } }
+  }
+  assert.ok(end > start, 'could not find the end of stripWrapperQuote');
+  return vm.runInNewContext(`${source.slice(start, end)}; stripWrapperQuote`, { String });
+}
+
+test('a blockquote wrapping the whole answer comes off', async () => {
+  const strip = await loadStripWrapperQuote();
+
+  assert.equal(
+    strip('> You are an expert editor.\n>\n> Return only the rewritten prompt.'),
+    'You are an expert editor.\n\nReturn only the rewritten prompt.'
+  );
+  // Up to three leading spaces is still a quote marker in CommonMark.
+  assert.equal(strip('   > indented marker'), 'indented marker');
+  // Applied twice is still a wrapper, and each pass takes one level.
+  assert.equal(strip('>> doubled\n>> lines'), 'doubled\nlines');
+  // A bare ">" line is an empty quoted line, not a line holding ">".
+  assert.equal(strip('> one\n>\n> two'), 'one\n\ntwo');
+});
+
+test('a blockquote that is part of the answer survives', async () => {
+  const strip = await loadStripWrapperQuote();
+
+  /* The narrow rule: one unquoted line of content means the quoting
+     is structure the model meant, so nothing is touched. Breaking
+     this would silently flatten every citation and callout in every
+     answer the app renders. */
+  const partial = 'Here is the fix:\n\n> the quoted bit\n\nand the rest.';
+  assert.equal(strip(partial), partial);
+
+  const trailing = '> a quoted opening\n\nfollowed by prose.';
+  assert.equal(strip(trailing), trailing);
+
+  // A fenced block whose fences are unquoted is not a wrapper either.
+  const fenced = '```\n> not a quote, it is sample text\n```';
+  assert.equal(strip(fenced), fenced);
+});
+
+test('ordinary answers pass through untouched', async () => {
+  const strip = await loadStripWrapperQuote();
+
+  assert.equal(strip(''), '');
+  assert.equal(strip(null), '');
+  assert.equal(strip('   \n\n  '), '   \n\n  ', 'whitespace-only is not a quote');
+  assert.equal(strip('Use A > B when comparing.'), 'Use A > B when comparing.');
+  const plainAnswer = '# Title\n\nA paragraph.\n\n- one\n- two\n';
+  assert.equal(strip(plainAnswer), plainAnswer);
+});
+
+// ─────────────────────────────────────────────
 // SOURCE HYGIENE
 // ─────────────────────────────────────────────
 
@@ -756,6 +949,33 @@ test('blank turns are dropped rather than sent', async () => {
 
   const turns = calls[0].body.messages.filter(m => m.role !== 'system');
   assert.deepEqual(plain(turns), [{ role: 'user', content: 'real' }]);
+});
+
+test('consecutive turns of the same role are joined, not sent as a pair', async () => {
+  /* This is what a retried failure looks like on the wire. A run that
+     errors leaves a turn in the thread that is shown but never sent,
+     so what reaches the adapter can be two user messages in a row.
+     Several of these APIs reject a non-alternating conversation
+     outright, which would turn one failure into two. */
+  const h = harness();
+  withKey(h, 'groq');
+  const calls = stubFetch(h, { choices: [{ message: { content: 'ok' } }], usage: {} });
+
+  await h.Runner.run({
+    system: 'SYS',
+    messages: [
+      { role: 'user', content: 'clean this up' },
+      { role: 'user', content: 'shorter, please' },
+      { role: 'assistant', content: 'first half' },
+      { role: 'assistant', content: 'second half' }
+    ]
+  });
+
+  const turns = calls[0].body.messages.filter(m => m.role !== 'system');
+  assert.deepEqual(plain(turns), [
+    { role: 'user', content: 'clean this up\n\nshorter, please' },
+    { role: 'assistant', content: 'first half\n\nsecond half' }
+  ]);
 });
 
 test('a provider error becomes an actionable message', async () => {

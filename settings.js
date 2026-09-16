@@ -1,39 +1,91 @@
 /* ============================================================
-   PROMPT STUDIO — per-device settings
+   PROMPT STUDIO — credentials and per-device settings
 
    Three kinds of state, and the split matters:
 
-     · CREDENTIALS (model API keys) stay in this browser's
-       localStorage and are NEVER written to Supabase. On a new
-       device you enter them once more.
+     · CREDENTIALS (model API keys, the active provider, the pinned
+       model per provider) are written to this browser's
+       localStorage AND — unless you turn "Remember keys in my
+       account" off — mirrored into your own row of
+       prompts.user_settings. localStorage is the working copy the
+       runner reads on every request; the Supabase row is what a new
+       device restores from.
 
-     · PREFERENCES (theme, view, sort) are also local, because they
-       are per-device by nature — a phone wants a different list
-       view than a desktop.
+     · PREFERENCES (theme, view, sort, split width) are local only,
+       because they are per-device by nature — a phone wants a
+       different list view than a desktop.
 
-     · Everything shared across devices — retention windows, the
-       default model, the prompts themselves — lives in Supabase.
-       See cloud.js.
+     · Everything else shared across devices — retention windows, max
+       tokens, the prompts themselves — lives in Supabase. See
+       cloud.js.
 
-   WHY PLAINTEXT localStorage IS THE CHOSEN TRADE
-     There is no server. Putting the key in localStorage means it is
-     readable by anything that can run JavaScript on this origin. Two
-     things make that acceptable here, and neither of them is the
-     login screen — that is a DOM visibility toggle, not a lock, and
-     the console can read localStorage without signing in:
+   ────────────────────────────────────────────────────────────
+   WHERE THE KEYS LIVE, AND WHY THAT IS THE TRADE
 
-       1. The Supabase session token already lives in this same
-          localStorage and is strictly more privileged — it grants
-          the whole workspace. Anyone who can read one can read the
-          other, so the API key adds no new class of exposure.
-       2. The CSP admits no third-party script origins and every
-          innerHTML boundary is escaped, so there is no untrusted JS
-          on the page to read it in the first place.
+   1. localStorage, under `ps.credentials.v1`, in plaintext.
 
-     If that trade ever stops being right, the answer is a Worker
-     proxy holding the key as a server secret — the shape sc/worker
-     already has — not encrypting it in the browser, which just moves
-     the problem to where the decryption key is kept.
+      Unchanged, and still the copy every request reads. It is
+      readable by anything that can run JavaScript on this origin,
+      and the login screen is not a lock — it is a DOM visibility
+      toggle, and the console can read localStorage without signing
+      in. Two things make that acceptable:
+
+        a. The Supabase session token already lives in this same
+           localStorage and is strictly more privileged — it grants
+           the whole workspace, including this row. Anyone who can
+           read one can read the other, so the API key adds no new
+           class of exposure.
+        b. The CSP admits no third-party script origins and every
+           innerHTML boundary is escaped, so there is no untrusted JS
+           on the page to read it in the first place.
+
+   2. prompts.user_settings.settings->'credentials', in plaintext
+      jsonb, one row per user.
+
+      What protects it is row-level security, not secrecy. The table
+      has RLS enabled with a single policy — `for all to
+      authenticated using (user_id = auth.uid())` — and the `anon`
+      role is revoked from the `prompts` schema itself, not merely
+      from the tables. So the publishable key committed in
+      supabase-config.js cannot read this row, and neither can any
+      other signed-in user: Postgres filters it before PostgREST ever
+      sees it.
+
+      THE RESIDUAL RISK, STATED PLAINLY. Three parties can read the
+      stored key, and none of them is an attacker on the internet:
+
+        · anyone holding this account's Supabase session (the same
+          people who could already read localStorage);
+        · anyone with the project's service_role key or SQL editor
+          access — that is the project owner, i.e. you;
+        · the database's own backups.
+
+      A provider API key is a bearer token for spend, so the honest
+      mitigation is not encryption, it is rotation: a key you can
+      revoke at the provider in ten seconds is the control that
+      actually works here.
+
+   WHY NOT ENCRYPT IT IN THE BROWSER
+      Because there is nowhere to put the decryption key that is not
+      also in the browser. Supabase does not hand the password back
+      after sign-in, so a passphrase-derived key would mean asking
+      for a second password on every device — and one stored
+      alongside the ciphertext is decoration, not protection. Fake
+      encryption reads as a stronger promise than RLS while being a
+      weaker one.
+
+   WHY NOT A WORKER PROXY
+      That remains the only shape that keeps the key out of the
+      browser entirely, and it is what to build if this ever holds a
+      key that cannot be cheaply rotated. It needs a deployed server,
+      which this project deliberately does not have.
+
+   OFFLINE AND OPT-OUT
+      localStorage is always written, so the app works with no
+      network and an unreachable Supabase never blocks a run. Turning
+      the toggle off stops the mirror AND deletes what is already in
+      the row on the next save — see normalizeSettings in cloud.js,
+      which drops `credentials` whenever `rememberKeys` is false.
    ============================================================ */
 
 (function () {
@@ -234,6 +286,84 @@
     drop(MODELS_KEY);
   }
 
+  // ─────────────────────────────────────────────
+  // CREDENTIALS ACROSS DEVICES
+  // ─────────────────────────────────────────────
+
+  /* What gets mirrored into prompts.user_settings. Empty values are
+     omitted rather than sent as "", so a provider you have never
+     configured takes no room in the row and — more importantly —
+     cannot come back down and blank out a key another device has. */
+  function credentialsPayload() {
+    const creds = readCredentials();
+    const keys = {};
+    const models = {};
+    PROVIDER_IDS.forEach(id => {
+      if (creds.keys[id]) keys[id] = creds.keys[id];
+      if (creds.models[id]) models[id] = creds.models[id];
+    });
+    return { provider: creds.provider, effort: creds.effort, keys, models };
+  }
+
+  function countKeys(creds) {
+    const c = creds || readCredentials();
+    return PROVIDER_IDS.filter(id => c.keys[id]).length;
+  }
+
+  /**
+   * Merge the copy held in Supabase into this browser.
+   *
+   * WHICH SIDE WINS, AND WHY IT IS NOT SYMMETRICAL
+   *   A key is adopted only where this device has none. The stored
+   *   row is refreshed on every local edit, so it is never older
+   *   than the last thing anybody typed — but a device that has a
+   *   key already is a device somebody set up on purpose, and
+   *   silently swapping it for another one mid-session would change
+   *   which account gets billed without saying so.
+   *
+   *   The ACTIVE provider and the reasoning effort are adopted only
+   *   when this device has nothing configured at all. That is the
+   *   new-device case, where following the row is the whole point;
+   *   on a device already in use, moving the provider under the
+   *   composer is the same surprise in a different place.
+   *
+   *   Nothing is ever deleted from here. A key removed elsewhere
+   *   stays on this device until "Forget keys" removes it, because
+   *   the local copy is also the offline cache and an empty pull
+   *   must never be able to wipe it.
+   */
+  function adoptCredentials(remote) {
+    const current = readCredentials();
+    if (!remote || typeof remote !== 'object') {
+      return { adopted: 0, changed: false, credentials: current };
+    }
+
+    const keys = {};
+    const models = {};
+    let adopted = 0;
+    let changed = false;
+
+    PROVIDER_IDS.forEach(id => {
+      const key = String((remote.keys && remote.keys[id]) || '').trim();
+      if (key && !current.keys[id]) { keys[id] = key; adopted += 1; changed = true; }
+      const model = String((remote.models && remote.models[id]) || '').trim();
+      if (model && !current.models[id]) { models[id] = model; changed = true; }
+    });
+
+    const patch = { keys, models };
+    const blank = countKeys(current) === 0;
+    if (blank && PROVIDERS[remote.provider]) { patch.provider = remote.provider; changed = true; }
+    // "" is already the default, so adopting it is a no-op that would
+    // still report a change and trigger a pointless re-render.
+    if (blank && remote.effort && EFFORTS.includes(remote.effort)) {
+      patch.effort = remote.effort;
+      changed = true;
+    }
+
+    if (!changed) return { adopted: 0, changed: false, credentials: current };
+    return { adopted, changed: true, credentials: writeCredentials(patch) };
+  }
+
   // Masked display. Never render a raw key into the DOM — this is
   // what Settings shows next to each provider.
   function fingerprint(token) {
@@ -330,6 +460,9 @@
     readCredentials,
     writeCredentials,
     clearCredentials,
+    credentialsPayload,
+    adoptCredentials,
+    countKeys,
     fingerprint,
     hasKey,
     resolveModel,

@@ -8,7 +8,16 @@
    SHAPE
      prompt_items   one row per prompt, in one of three sections
      prompt_runs    one row per API run — append-only, online-only
-     user_settings  one jsonb row: retention windows, defaults
+     user_settings  one jsonb row: retention windows, defaults, and
+                    — when "Remember keys in my account" is on — the
+                    provider API keys. That row is readable only by
+                    the account that owns it: RLS on user_settings is
+                    `for all to authenticated using (user_id =
+                    auth.uid())`, and `anon` is revoked from the
+                    schema, so the publishable key in
+                    supabase-config.js cannot reach it. The full
+                    argument and the residual risk are at the top of
+                    settings.js.
 
    TWO SYNC TIERS, ON PURPOSE
      Prompts use the delta/revision machinery this schema has always
@@ -79,8 +88,58 @@
   const DEFAULT_SETTINGS = Object.freeze({
     scratchRetentionDays: 7,
     runsRetentionDays: 30,
-    defaultMaxTokens: 16000
+    defaultMaxTokens: 16000,
+
+    /* Whether the provider API keys are mirrored into this row.
+       Defaults ON, and deliberately: the whole reason it exists is a
+       new device that would otherwise sit there asking for a key it
+       has no way to produce. Turning it off deletes the mirror on
+       the next save — see normalizeSettings. */
+    rememberKeys: true,
+
+    /* { provider, effort, keys: {id: key}, models: {id: model} }, or
+       null when nothing is stored. Plaintext, protected by the RLS
+       policy on user_settings rather than by secrecy — the full
+       reasoning, and the residual risk, are written out at the top
+       of settings.js. */
+    credentials: null
   });
+
+  /* A jsonb column is whatever was last written to it, including by
+     a hand-run UPDATE in the SQL editor, so everything read back out
+     is re-checked here before the runner is handed it as an API key.
+     Provider ids are matched against a shape rather than a list:
+     cloud.js does not know what providers exist and should not have
+     to be edited when a tenth one is added. */
+  const CREDENTIAL_ID = /^[a-z][a-z0-9_-]{0,31}$/;
+  const CREDENTIAL_VALUE_MAX = 512;
+
+  function normalizeCredentialMap(raw) {
+    const out = {};
+    if (!raw || typeof raw !== 'object') return out;
+    Object.keys(raw).slice(0, 32).forEach(id => {
+      if (!CREDENTIAL_ID.test(id)) return;
+      if (typeof raw[id] !== 'string') return;
+      const value = raw[id].trim();
+      if (!value || value.length > CREDENTIAL_VALUE_MAX) return;
+      out[id] = value;
+    });
+    return out;
+  }
+
+  function normalizeCredentials(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const keys = normalizeCredentialMap(raw.keys);
+    const models = normalizeCredentialMap(raw.models);
+    const provider = typeof raw.provider === 'string' && CREDENTIAL_ID.test(raw.provider)
+      ? raw.provider : '';
+    const effort = typeof raw.effort === 'string' && /^[a-z]{0,8}$/.test(raw.effort)
+      ? raw.effort : '';
+    // Nothing worth keeping is stored as null, so a row that has
+    // never held a key reads back the same as one that was cleared.
+    if (!Object.keys(keys).length && !Object.keys(models).length && !provider) return null;
+    return { provider, effort, keys, models };
+  }
 
   // Flush retry policy. Without a cap, a conflict the rebase cannot
   // resolve becomes a hot loop against the RPC.
@@ -291,11 +350,21 @@
       const n = Number(value);
       return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
     };
+    /* Absent means on, so a row written before this setting existed
+       keeps the default rather than reading as an opt-out. Only an
+       explicit `false` turns it off — and when it is off the mirror
+       is dropped HERE, on the way through, so switching the toggle
+       and saving is what erases the stored keys. There is no second
+       code path that could forget to. */
+    const rememberKeys = s.rememberKeys !== false;
+
     return {
       scratchRetentionDays: retention(s.scratchRetentionDays, DEFAULT_SETTINGS.scratchRetentionDays),
       runsRetentionDays: retention(s.runsRetentionDays, DEFAULT_SETTINGS.runsRetentionDays),
       defaultMaxTokens: Number(s.defaultMaxTokens) > 0
-        ? Math.floor(Number(s.defaultMaxTokens)) : DEFAULT_SETTINGS.defaultMaxTokens
+        ? Math.floor(Number(s.defaultMaxTokens)) : DEFAULT_SETTINGS.defaultMaxTokens,
+      rememberKeys,
+      credentials: rememberKeys ? normalizeCredentials(s.credentials) : null
     };
   }
 
@@ -1102,6 +1171,11 @@
     emit('change', { reason: 'settings' });
   }
 
+  /* One row, one write, whatever changed. `credentials` rides the
+     same path as every other setting on purpose: the key and the
+     retention window are protected by exactly the same policy, so
+     giving the key its own table or its own write would imply a
+     difference in protection that does not exist. */
   async function saveSettings(patch) {
     const c = client();
     if (!c || !currentUser) throw new Error('Not signed in.');

@@ -144,9 +144,46 @@ grant select, insert, update, delete on prompts.prompt_runs to authenticated;
 -- Theme, default model, per-section retention. One row and one write,
 -- so adding a preference later is not a schema change.
 --
--- Provider API keys are deliberately NOT here. They stay in the
--- browser's localStorage and are never written to Supabase — same
--- rule as sc and lists. See settings.js for the reasoning.
+-- PROVIDER API KEYS LIVE HERE TOO, under settings->'credentials',
+-- unless the user turns "Remember keys in my account" off. This
+-- reverses the earlier rule ("never written to Supabase"), and the
+-- reversal needs no migration: it is the same jsonb column, and a
+-- row written by the older client simply has no 'credentials' member.
+--
+-- What protects them is the policy below, not secrecy:
+--
+--   · RLS is enabled, and the one policy is scoped to the
+--     `authenticated` role with `user_id = auth.uid()` on both USING
+--     and WITH CHECK — so no signed-in user can read another's row,
+--     and Postgres filters it before PostgREST sees it.
+--   · `anon` is revoked from the `prompts` schema itself, not merely
+--     from the tables, so the publishable key committed in
+--     supabase-config.js cannot select from here at all.
+--
+-- Residual risk, stated rather than hidden: anyone holding this
+-- account's session, anyone with the service_role key or SQL editor
+-- access (the project owner), and the database backups can all read
+-- the stored key. A provider key is a bearer token for spend, so the
+-- control that actually works is rotation at the provider. The full
+-- argument, including why browser-side encryption was rejected, is
+-- at the top of settings.js.
+--
+-- To confirm the posture on a live project before trusting it:
+--
+--   select relrowsecurity from pg_class
+--     where oid = 'prompts.user_settings'::regclass;
+--   select polname, polroles::regrole[], polcmd,
+--          pg_get_expr(polqual, polrelid)      as using_expr,
+--          pg_get_expr(polwithcheck, polrelid) as check_expr
+--     from pg_policy where polrelid = 'prompts.user_settings'::regclass;
+--   select nspname, nspacl from pg_namespace where nspname = 'prompts';
+--
+-- To opt out permanently, for every device at once:
+--
+--   update prompts.user_settings
+--      set settings = (settings - 'credentials')
+--                     || '{"rememberKeys": false}'::jsonb
+--    where user_id = auth.uid();
 create table if not exists prompts.user_settings (
   user_id    uuid primary key references auth.users(id) on delete cascade,
   settings   jsonb not null default '{}'::jsonb,

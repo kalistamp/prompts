@@ -9,7 +9,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self'; font-src 'none'; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.mistral.ai https://api.cohere.com https://router.huggingface.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
     <script>(function(){try{var p=JSON.parse(localStorage.getItem('ps.prefs.v1')||'{}');document.documentElement.setAttribute('data-theme',p.theme==='light'?'light':'dark')}catch(e){}})();</script>
-    <link rel="stylesheet" href="style.css?v=11">
+    <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
     <!-- ── AUTH ─────────────────────────────────────────────── -->
@@ -413,7 +413,15 @@
 
                 <section class="settings-group">
                     <h3>Model provider</h3>
-                    <p class="settings-note">Keys are stored in this browser only and are never written to Supabase. On a new device you enter them once more.</p>
+                    <p class="settings-note">Keys are always kept in this browser, so runs work offline. With <strong>Remember keys</strong> on they are also saved to your own row of the <code>user_settings</code> table, which row-level security makes readable only by this signed-in account &mdash; not by other users and not by the publishable key in the page source. A new device then picks them up on first sign-in.</p>
+                    <div class="settings-sweep key-storage">
+                        <label class="checkbox-inline">
+                            <input type="checkbox" id="settings-remember-keys"> <span>Remember keys in my account</span>
+                        </label>
+                        <span id="key-storage-state"></span>
+                        <button class="btn btn-secondary" type="button" id="forget-keys-btn"><i class="fas fa-eraser"></i> Forget keys</button>
+                    </div>
+                    <p class="field-hint" id="key-storage-hint"></p>
                     <div class="form-control">
                         <label for="settings-provider">Active provider</label>
                         <select id="settings-provider"></select>
@@ -638,12 +646,12 @@
     </dialog>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.4" integrity="sha384-yiVMs0R/Jyz7OhoXa/DsEMUSBLjEhr/QJta2ONO+zB6I8/GmNg/7AUFrZmAJV7KV" crossorigin="anonymous"></script>
-    <script src="./supabase-config.js?v=11"></script>
-    <script src="./settings.js?v=11"></script>
-    <script src="./cloud.js?v=11"></script>
-    <script src="./diff.js?v=11"></script>
-    <script src="./markdown.js?v=11"></script>
-    <script src="./runner.js?v=11"></script>
-    <script src="./script.js?v=11"></script>
+    <script src="./supabase-config.js?v=12"></script>
+    <script src="./settings.js?v=12"></script>
+    <script src="./cloud.js?v=12"></script>
+    <script src="./diff.js?v=12"></script>
+    <script src="./markdown.js?v=12"></script>
+    <script src="./runner.js?v=12"></script>
+    <script src="./script.js?v=12"></script>
 </body>
 </html>

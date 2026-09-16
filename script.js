@@ -220,6 +220,10 @@
     accountEmail: $('account-email'),
     cloudStatus: $('cloud-status'),
     settingsProvider: $('settings-provider'),
+    settingsRememberKeys: $('settings-remember-keys'),
+    keyStorageState: $('key-storage-state'),
+    keyStorageHint: $('key-storage-hint'),
+    forgetKeysBtn: $('forget-keys-btn'),
     providerRows: $('provider-rows'),
     settingsEffort: $('settings-effort'),
     settingsMaxTokens: $('settings-max-tokens'),
@@ -1894,6 +1898,67 @@
   // OUTPUT FORMATTING
   // ─────────────────────────────────────────────
 
+  /* THE STRAY ">" — WHERE IT COMES FROM
+
+     It is the model. Four things were suspected and three were
+     cleared:
+
+       · Runner.assemble() concatenates the meta-prompt and the input
+         and adds no punctuation of its own — it only substitutes
+         {{input}} or splits system from user.
+       · markdown.js introduces no ">" anywhere. Render a paragraph
+         containing one and it comes back as `&gt;`; render a quoted
+         block and the ">" is consumed into <blockquote> with nothing
+         left in the text. There is no rule that emits one.
+       · The thread painter writes turn.content through textContent
+         or through the renderer, and the stylesheet has no ::before
+         carrying a ">" (the blockquote rule draws a border-left, not
+         a character).
+
+     What is left is the answer itself. Asked to return a cleaned-up
+     prompt, a model very often hands it back as a Markdown
+     blockquote — "> line" on every line — because that is how it
+     marks "here is the artefact, quoted". Formatted mode then draws
+     it as a quote bar, Raw mode shows the ">" characters, and Copy
+     puts them on the clipboard, which is where it actually hurts:
+     you paste your cleaned prompt somewhere and every line starts
+     with "> ".
+
+     So it is stripped ONCE, here, where an answer becomes a turn —
+     which fixes the display in both modes, the copy, the save to
+     Library or Scratch, and the History row together, rather than in
+     four places that could drift apart.
+
+     THE RULE, AND WHY IT IS NARROW
+       Only a quote that wraps the WHOLE answer is a wrapper. If a
+       single non-blank line is unquoted, the quoting is structure the
+       model meant — a citation, a callout, an example — and the text
+       is returned untouched. A "> " that is genuinely part of the
+       content therefore survives, and so does a partial blockquote.
+
+       It loops because ">> " is the same wrapper applied twice, and
+       each pass removes exactly one level, so it terminates.
+
+       The one thing it cannot tell apart is an answer whose entire
+       content is legitimately one quotation. That is the trade, and
+       it is the right way round: an unwanted ">" on every line of
+       every run is a daily cost, and losing the bar on a whole-answer
+       quotation is not. */
+  function stripWrapperQuote(text) {
+    let out = String(text || '');
+
+    for (let pass = 0; pass < 8; pass += 1) {
+      const lines = out.split('\n');
+      const content = lines.filter(line => /\S/.test(line));
+      if (!content.length) return out;
+      if (!content.every(line => /^ {0,3}>/.test(line))) return out;
+      // `> ` and a bare `>` both come off; the optional space is what
+      // makes an empty quoted line collapse to an empty line.
+      out = lines.map(line => line.replace(/^ {0,3}> ?/, '')).join('\n');
+    }
+    return out;
+  }
+
   /* Model output is Markdown far more often than not — headings,
      numbered steps, fenced code — and reading it as one wall of
      monospace throws all of that away.
@@ -2159,25 +2224,59 @@
 
     if (turn.run) block.appendChild(buildReceipt(turn.run));
 
-    if (!turn.failed) {
-      const actions = turnEl('turn-actions');
+    /* A FAILED TURN NOW HAS ACTIONS TOO.
+
+       It used to have none, which meant the one outcome you cannot
+       do anything with was also the one the UI offered no way out
+       of: the composer had been emptied, and a refinement's text was
+       handed back only if the exchange was still on screen. Retry
+       and Copy prompt are exactly the two moves a failure leaves —
+       send it again, or take the prompt somewhere that is answering
+       — so they are what a failure gets, with the receipt beside
+       them because a 429 and a 404 are not the same problem.
+
+       What a failure does NOT get is Copy, Save or Read: there is no
+       output, only the error text, and filing that in the Library is
+       not a thing anybody means to do. */
+    const actions = turnEl('turn-actions');
+    if (turn.failed) {
+      actions.appendChild(turnAction('fa-rotate', 'Retry', 'retry', index, { primary: true }));
+      if (turn.request) {
+        actions.appendChild(turnAction('fa-paste', 'Copy prompt', 'copy-prompt', index));
+      }
+      if (turn.run) actions.appendChild(turnAction('fa-receipt', 'Receipt', 'receipt', index));
+    } else {
       // First, because on a phone reading it is what you came to do.
       actions.appendChild(turnAction('fa-up-right-and-down-left-from-center', 'Read', 'read', index));
-      actions.appendChild(turnAction('fa-copy', 'Copy', 'copy', index));
+      // "Copy output" rather than "Copy": with a second copy button
+      // beside it, a bare verb no longer says which of the two.
+      actions.appendChild(turnAction('fa-copy', 'Copy output', 'copy', index));
+      if (turn.request) {
+        actions.appendChild(turnAction('fa-paste', 'Copy prompt', 'copy-prompt', index));
+        actions.appendChild(turnAction('fa-rotate', 'Retry', 'retry', index));
+      }
       actions.appendChild(turnAction('fa-book', 'Save to Library', 'save-library', index));
       actions.appendChild(turnAction('fa-note-sticky', 'Drop to Scratch', 'save-scratch', index));
       if (turn.run) actions.appendChild(turnAction('fa-receipt', 'Receipt', 'receipt', index));
-      block.appendChild(actions);
     }
+    block.appendChild(actions);
     return block;
   }
 
-  function turnAction(icon, label, action, index) {
+  const TURN_ACTION_TITLES = {
+    'copy-prompt': 'Copy what was sent to the model for this turn',
+    retry: 'Send this same request again, with the provider and model selected now'
+  };
+
+  function turnAction(icon, label, action, index, { primary = false } = {}) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'turn-action';
+    button.className = 'turn-action' + (primary ? ' is-primary' : '');
     button.dataset.turnAction = action;
     button.dataset.turnIndex = String(index);
+    // The two new verbs are ambiguous on their own; the rest are not,
+    // and a tooltip that repeats the label is noise.
+    if (TURN_ACTION_TITLES[action]) button.title = TURN_ACTION_TITLES[action];
     button.innerHTML = `<i class="fas ${icon}" aria-hidden="true"></i> ${escapeHtml(label)}`;
     return button;
   }
@@ -2333,12 +2432,7 @@
     const meta = selectedMeta();
     if (!meta) { showToast('Pick a meta-prompt first — press / in the composer.'); return; }
 
-    const creds = Settings.readCredentials();
-    if (!creds.keys[creds.provider]) {
-      showToast('Add an API key in Settings first.');
-      openSettings();
-      return;
-    }
+    if (!requireKey()) return;
 
     const typed = el.workshopInput.value;
     const isRefine = Boolean(state.thread && threadReplies() > 0);
@@ -2350,7 +2444,93 @@
       startThread(meta, typed);
     }
 
-    /* The exchange this run belongs to, held by reference for the
+    // The composer empties on send, the way a composer should: what
+    // you typed is now visible as a turn, so leaving it in the box
+    // as well would show it twice.
+    el.workshopInput.value = '';
+    autoGrowComposer();
+
+    await executeTurn({ thread: state.thread, meta, isRefine, typed });
+  }
+
+  function requireKey() {
+    const creds = Settings.readCredentials();
+    if (creds.keys[creds.provider]) return true;
+    showToast('Add an API key in Settings first.');
+    openSettings();
+    return false;
+  }
+
+  /* What a turn was actually asked, kept with the turn it produced.
+
+     Retry and Copy prompt both need "the request that made THIS
+     answer", and neither can be reconstructed from the thread
+     afterwards: a failed refinement pops its own user turn back off
+     (see below), and a thread that has moved on no longer looks the
+     way it did when an earlier turn was sent. So the request is
+     snapshotted before it goes out, and the turn keeps it.
+
+     The message list is copied entry by entry rather than referenced,
+     because the live array is mutated — pushed, popped and replaced —
+     for the rest of the session. The copies are shallow and keep
+     `run`, `display` and `failed`, so restoring a snapshot restores
+     the earlier turns' receipts with it rather than blanking them. */
+  function snapshotRequest(thread, meta, isRefine, typed) {
+    return {
+      system: thread.system,
+      messages: thread.messages.map(turn => ({ ...turn })),
+      metaPromptId: meta.id,
+      metaPromptTitle: meta.title,
+      isRefine,
+      typed: String(typed || ''),
+      prompt: promptTextFor(thread, isRefine, typed)
+    };
+  }
+
+  /* What "Copy prompt" puts on the clipboard.
+
+     For the turn that opened the exchange: the whole assembled
+     request — the system message and the user message, in that
+     order, which is exactly what went over the wire and exactly what
+     you would paste into another tool to get the same answer by hand
+     when the API is refusing to answer at all.
+
+     For a refinement: the change you typed. The system prompt has not
+     moved since the first turn, and repeating it above two words of
+     follow-up would bury the part you asked for. */
+  function promptTextFor(thread, isRefine, typed) {
+    if (isRefine) return String(typed || '').trim();
+    const first = thread.messages[0];
+    const user = first ? String(first.content || '') : '';
+    const system = String(thread.system || '');
+    if (!system) return user;
+    if (!user) return system;
+    return `${system}\n\n${user}`;
+  }
+
+  /* Failed turns are shown but never sent back.
+
+     A failure is pushed into the thread as an assistant turn whose
+     content is the error message, so it can be read and retried in
+     place. That text is not something the model said, and handing it
+     back on the next turn asks it to continue from an error it never
+     produced. It is dropped on the way to the wire, here, rather than
+     being kept out of the thread — where it would cost the receipt
+     and the Retry button that are the point of showing it. */
+  function wireMessages(messages) {
+    return (messages || []).filter(turn => !turn.failed);
+  }
+
+  /**
+   * Send one turn and file the result. Everything from here down is
+   * shared by the composer and by Retry, which is why it takes the
+   * request rather than reading the composer.
+   */
+  async function executeTurn({ thread, meta, isRefine, typed }) {
+    const creds = Settings.readCredentials();
+    const request = snapshotRequest(thread, meta, isRefine, typed);
+
+    /* The exchange this run belongs to is held by reference for the
        rest of the function. A run is awaited, and the thread can be
        ended underneath it while it is in flight — Clear does it, and
        so does copying a prompt into Workshop from another section.
@@ -2360,13 +2540,6 @@
        turn appears, and if it is not, the object is orphaned and the
        answer is dropped — but the History row is still written, so
        the tokens that were spent are still accounted for. */
-    const thread = state.thread;
-
-    // The composer empties on send, the way a composer should: what
-    // you typed is now visible as a turn, so leaving it in the box
-    // as well would show it twice.
-    el.workshopInput.value = '';
-    autoGrowComposer();
     state.lastRun = null;
 
     setRunPhase('thinking');
@@ -2386,7 +2559,7 @@
     try {
       receipt = await Runner.run({
         system: thread.system,
-        messages: thread.messages,
+        messages: wireMessages(thread.messages),
         maxTokens: Cloud.getSettings().defaultMaxTokens,
         signal: state.abortController.signal,
         onDelta: chunk => {
@@ -2417,8 +2590,15 @@
 
     const aborted = failure && failure.name === 'AbortError';
 
+    /* The blockquote a model wraps its answer in is taken off once,
+       here, before the text becomes anything else. Everything
+       downstream — the thread, Copy, Save to Library, the History
+       row, the reader — then sees the same text, because they all
+       read this one. See stripWrapperQuote for the rule. */
+    const answer = receipt ? stripWrapperQuote(receipt.text) : '';
+
     if (receipt) {
-      thread.messages.push({ role: 'assistant', content: receipt.text });
+      thread.messages.push({ role: 'assistant', content: answer, request });
     } else if (isRefine) {
       /* The refinement never got an answer, so drop it back out of
          the thread. Leaving it would send the same unanswered turn
@@ -2455,7 +2635,7 @@
       responseId: receipt ? receipt.responseId : '',
       promptVersion: receipt ? receipt.promptVersion : Runner.PROMPT_VERSION,
       input: isRefine ? typed.trim() : typed,
-      output: receipt ? receipt.text : '',
+      output: answer,
       status: receipt ? 'ok' : 'error',
       errorMessage: failure ? String(failure.message || '') : '',
       inputTokens: receipt ? receipt.inputTokens : 0,
@@ -2482,17 +2662,23 @@
       const last = thread.messages[thread.messages.length - 1];
       last.run = state.lastRun;
     } else {
+      /* The failed turn carries the same request snapshot as a
+         successful one would have. That is what Retry and Copy
+         prompt read, and a failure is the turn that needs both
+         most — there is no answer to work from, only the thing that
+         was asked. */
       thread.messages.push({
         role: 'assistant',
         failed: true,
         content: failure ? (failure.message || 'The run failed.') : 'The run failed.',
         hint: failure && failure.hint ? failure.hint : '',
-        run: state.lastRun
+        run: state.lastRun,
+        request
       });
     }
 
     if (receipt) {
-      const words = String(receipt.text || '').trim().split(/\s+/).filter(Boolean).length;
+      const words = String(answer).trim().split(/\s+/).filter(Boolean).length;
       announce(`Answer received — about ${words.toLocaleString()} words in ${(receipt.durationMs / 1000).toFixed(1)} seconds.`);
     } else {
       announce(`Run failed: ${failure ? failure.message || 'unknown error' : 'unknown error'}`);
@@ -2502,6 +2688,61 @@
     scrollThread(true);
     renderWorkshopChrome();
     render();
+  }
+
+  /* Send a turn again, exactly as it was sent.
+
+     The thread is rewound to the snapshot the turn was made from —
+     the same messages, the same system prompt — and the run goes out
+     from there. What is NOT rewound is the provider, the model, the
+     reasoning effort or max tokens: Retry reads those live, which is
+     the whole point after a 404 on a model you have since changed,
+     or a 401 on a key you have since fixed.
+
+     Rewinding drops this turn and everything after it, which on the
+     last turn is nothing and further up the thread is real work. So
+     the question is asked once, and only when there is something to
+     lose. */
+  function retryTurn(index) {
+    const thread = state.thread;
+    const turn = turnAt(index);
+    if (!thread || !turn || !turn.request) return;
+    if (state.running) { showToast('A run is already in flight.'); return; }
+    if (!requireKey()) return;
+
+    const request = turn.request;
+    const meta = Cloud.getPrompts().find(p => p.id === request.metaPromptId) ||
+      { id: request.metaPromptId, title: request.metaPromptTitle };
+    const losing = thread.messages.length - index - 1;
+
+    const go = () => {
+      thread.system = request.system;
+      thread.messages = request.messages.map(entry => ({ ...entry }));
+
+      /* A failed refinement put its text back in the composer on the
+         way out. The snapshot restores that turn to the thread, so
+         leaving the copy in the box would show it in both places and
+         send it twice on the next Run. */
+      if (request.isRefine && el.workshopInput.value.trim() === request.typed.trim()) {
+        el.workshopInput.value = '';
+        autoGrowComposer();
+      }
+
+      executeTurn({
+        thread,
+        meta,
+        isRefine: request.isRefine,
+        typed: request.typed
+      });
+    };
+
+    if (losing <= 0) { go(); return; }
+    confirmAction({
+      title: 'Retry this turn?',
+      description: `Running it again replaces this answer and discards the ${losing} turn${losing === 1 ? '' : 's'} after it. Everything already saved to Library, Scratch or History stays.`,
+      confirmLabel: 'Retry',
+      onConfirm: go
+    });
   }
 
   /* Chrome only — the chips, the button label, the hint. Separate
@@ -2891,6 +3132,119 @@
   }
 
   // ─────────────────────────────────────────────
+  // CREDENTIALS ACROSS DEVICES
+  // ─────────────────────────────────────────────
+
+  /* localStorage is the working copy and the offline cache;
+     prompts.user_settings is the copy a new device restores from.
+     Two directions, and they are not symmetrical:
+
+       DOWN  once per session, when the settings row arrives, and
+             only into providers this device has nothing for. See
+             Settings.adoptCredentials for why it never overwrites.
+
+       UP    on every edit, debounced, so a key typed character by
+             character is one write rather than forty.
+
+     A failure in either direction is survivable by design: the run
+     path reads localStorage and never touches Supabase, so a row
+     that cannot be reached costs you the sync, not the app. */
+
+  let credentialsHydrated = false;
+  let credentialPushTimer = null;
+  let credentialPushFailed = false;
+
+  function hydrateCredentialsFromCloud() {
+    if (credentialsHydrated || !Cloud.getUser()) return;
+    credentialsHydrated = true;
+
+    const cloudSettings = Cloud.getSettings();
+    if (!cloudSettings.rememberKeys) return;
+
+    const result = Settings.adoptCredentials(cloudSettings.credentials);
+    if (result.changed) {
+      if (result.adopted) {
+        showToast(`Restored ${result.adopted} saved API key${result.adopted === 1 ? '' : 's'} from your account.`);
+      }
+      if (el.settingsDialog.open) renderSettings();
+      renderWorkshopChrome();
+      render();
+    }
+
+    /* The other half of the first sign-in after this shipped: a
+       device that already holds the keys and a row that does not yet.
+       Seeding it here is what makes the NEXT device work, and it
+       costs one write that would otherwise wait for an edit nobody
+       has any reason to make.
+
+       Only when the row would actually change, though — otherwise
+       every sign-in on every device writes the same bytes back. */
+    if (Settings.countKeys() && !sameCredentials(cloudSettings.credentials)) {
+      pushCredentialsToCloud({ immediate: true });
+    }
+  }
+
+  /* Structural compare, key order ignored — jsonb does not preserve
+     the order a member was written in, so a plain JSON.stringify of
+     the row against the payload would read as "different" every time
+     and defeat the check it is there to make. A false "different"
+     only ever costs one redundant write, never a wrong one. */
+  function sameCredentials(stored) {
+    if (!stored) return false;
+    const flatten = value => (value && typeof value === 'object'
+      ? Object.keys(value).sort().map(key => [key, flatten(value[key])])
+      : value);
+    return JSON.stringify(flatten(stored)) ===
+      JSON.stringify(flatten(Settings.credentialsPayload()));
+  }
+
+  function pushCredentialsToCloud({ immediate = false } = {}) {
+    clearTimeout(credentialPushTimer);
+    const send = () => {
+      if (!Cloud.getUser() || !Cloud.getSettings().rememberKeys) return;
+      Cloud.saveSettings({ credentials: Settings.credentialsPayload() })
+        .then(() => { credentialPushFailed = false; })
+        .catch(error => {
+          console.error('[ui] could not save keys to the account', error);
+          // Once per run of failures: this fires on every keystroke,
+          // and a dead connection would otherwise bury the screen.
+          if (!credentialPushFailed) {
+            credentialPushFailed = true;
+            showToast('Keys saved on this device, but not to your account.');
+          }
+        });
+    };
+    if (immediate) send();
+    else credentialPushTimer = setTimeout(send, 800);
+  }
+
+  /* Off means gone, not merely "stop writing". normalizeSettings in
+     cloud.js drops `credentials` whenever rememberKeys is false, so
+     this one save both flips the flag and clears the stored keys —
+     and it is the same save on every device, because they all read
+     the same row. */
+  function setRememberKeys(remember) {
+    clearTimeout(credentialPushTimer);
+    const patch = remember
+      ? { rememberKeys: true, credentials: Settings.credentialsPayload() }
+      : { rememberKeys: false, credentials: null };
+
+    return Cloud.saveSettings(patch)
+      .then(() => {
+        credentialPushFailed = false;
+        showToast(remember
+          ? 'Keys will be restored on any device you sign in to.'
+          : 'Keys removed from your account. They stay on this device.');
+        renderSettings();
+      })
+      .catch(error => {
+        console.error('[ui] could not change the key storage setting', error);
+        showToast('Could not change that. Check the connection and try again.');
+        renderSettings();
+      });
+  }
+
+  // ─────────────────────────────────────────────
   // SETTINGS
   // ─────────────────────────────────────────────
 
@@ -2914,6 +3268,7 @@
     });
     el.settingsProvider.value = creds.provider;
     el.settingsEffort.value = creds.effort;
+    renderKeyStorage(creds, cloudSettings);
     el.settingsMaxTokens.value = cloudSettings.defaultMaxTokens;
     el.settingsScratchDays.value = cloudSettings.scratchRetentionDays === null
       ? '' : String(cloudSettings.scratchRetentionDays);
@@ -2964,6 +3319,32 @@
     updateSweepSummary();
   }
 
+  /* The copy under the toggle says where the keys are RIGHT NOW,
+     which is not the same sentence in the two states and was the
+     part the old note got wrong — it claimed keys were never written
+     to Supabase, and after this change that would have been a false
+     statement about where your credentials are. */
+  function renderKeyStorage(creds, cloudSettings) {
+    const stored = Settings.countKeys(creds);
+    const remembered = cloudSettings.rememberKeys;
+    const inRow = remembered && cloudSettings.credentials
+      ? Object.keys(cloudSettings.credentials.keys || {}).length
+      : 0;
+
+    el.settingsRememberKeys.checked = remembered;
+    el.forgetKeysBtn.disabled = stored === 0 && inRow === 0;
+
+    el.keyStorageState.textContent = !stored && !inRow
+      ? 'No keys stored yet.'
+      : remembered
+        ? `${stored} on this device · ${inRow} in your account`
+        : `${stored} on this device · none in your account`;
+
+    el.keyStorageHint.textContent = remembered
+      ? 'Stored as plaintext in a row only your account can read. Anyone who can sign in as you — or who holds the project’s service-role key — can read them, so rotate a key at the provider if it is ever exposed.'
+      : 'This device only. Clearing site data, or opening the app in another browser, means pasting the key in again.';
+  }
+
   function populateModelSelect(providerId, creds) {
     const select = el.providerRows.querySelector(`[data-model-input="${providerId}"]`);
     if (!select) return;
@@ -2999,12 +3380,16 @@
       if (keyInput) keys[id] = keyInput.value;
       if (modelInput) models[id] = modelInput.value;
     });
-    return Settings.writeCredentials({
+    const saved = Settings.writeCredentials({
       provider: el.settingsProvider.value,
       effort: el.settingsEffort.value,
       keys,
       models
     });
+    // Local first, always. The mirror is debounced and may fail; the
+    // key you just typed is usable either way.
+    pushCredentialsToCloud();
+    return saved;
   }
 
   function updateSweepSummary() {
@@ -3621,6 +4006,17 @@
       read: () => openReader(index),
       // The raw Markdown source, never the rendered HTML.
       copy: () => copyText(turn.content, 'Output copied.'),
+      /* The request, not the answer — what this turn ASKED. On the
+         opening turn that is the assembled system prompt and user
+         message together, so it can be pasted straight into another
+         tool when the API will not answer. */
+      'copy-prompt': () => {
+        if (!turn.request) return;
+        copyText(turn.request.prompt, turn.request.isRefine
+          ? 'Your change copied.'
+          : 'Prompt copied.');
+      },
+      retry: () => retryTurn(index),
       'save-library': () => saveTurnOutput(index, 'library'),
       'save-scratch': () => saveTurnOutput(index, 'scratch'),
       receipt: () => { if (turn.run) openRunDetail(turn.run.id); }
@@ -3762,6 +4158,57 @@
   });
 
   el.settingsEffort.addEventListener('change', collectCredentials);
+
+  el.settingsRememberKeys.addEventListener('change', () => {
+    // Ticking it is not destructive, so the box may move first and the
+    // save follow; a failure puts it back through renderSettings.
+    if (el.settingsRememberKeys.checked) { setRememberKeys(true); return; }
+
+    /* Unticking DELETES what is stored, on every device at once, so
+       it is asked first — and the box is put straight back while the
+       question is open. The checkbox reports what the row says, not
+       what was clicked at it: if the confirm is dismissed, or never
+       answered at all, the control must not be left describing a
+       state the row is not in. renderKeyStorage ticks it again when
+       the save lands. */
+    renderKeyStorage(Settings.readCredentials(), Cloud.getSettings());
+    confirmAction({
+      title: 'Stop remembering keys?',
+      description: 'The keys saved in your account will be deleted. They stay in this browser, but signing in on another device will ask for them again.',
+      confirmLabel: 'Stop remembering',
+      onConfirm: () => setRememberKeys(false)
+    });
+  });
+
+  el.forgetKeysBtn.addEventListener('click', () => {
+    confirmAction({
+      title: 'Forget every stored key?',
+      description: 'Removes the API keys and the cached model lists from this browser and from your account. Your prompts, runs and settings are untouched. The keys themselves keep working — revoke them at the provider if that is what you meant.',
+      confirmLabel: 'Forget keys',
+      onConfirm: () => {
+        clearTimeout(credentialPushTimer);
+        Settings.clearCredentials();
+        const done = () => {
+          renderSettings();
+          renderWorkshop();
+          render();
+          showToast('Stored keys removed.');
+        };
+        // The local clear is the part that must not be conditional on
+        // the network, so it has already happened by here.
+        if (!Cloud.getUser()) { done(); return; }
+        Cloud.saveSettings({ credentials: null })
+          .then(done)
+          .catch(error => {
+            console.error('[ui] could not clear the stored keys', error);
+            renderSettings();
+            renderWorkshop();
+            render();
+            showToast('Removed from this device, but the account copy could not be reached.');
+          });
+      }
+    });
+  });
 
   /* `input` as well as `change`: a password field only fires `change`
      on blur, so a key typed and left focused was not saved yet, and the
@@ -4025,9 +4472,18 @@
     }
   });
 
-  Cloud.on('change', () => {
+  Cloud.on('change', payload => {
+    /* The settings row is where the stored keys arrive, and it lands
+       after sign-in rather than during it — syncFromCloud is
+       deliberately not awaited, so the cached prompts paint first.
+       This is the moment they are available, and hydrate guards
+       itself against running twice. */
+    if (payload && payload.reason === 'settings') hydrateCredentialsFromCloud();
     render();
-    if (el.settingsDialog.open) updateSweepSummary();
+    if (el.settingsDialog.open) {
+      updateSweepSummary();
+      renderKeyStorage(Settings.readCredentials(), Cloud.getSettings());
+    }
   });
 
   // ─────────────────────────────────────────────
@@ -4060,6 +4516,10 @@
   }
 
   function endSession() {
+    // The next sign-in gets its own pull, and may be a different
+    // account. Leaving this latched would hand them this one's row.
+    credentialsHydrated = false;
+    clearTimeout(credentialPushTimer);
     Cloud.endSession();
     document.body.classList.remove('is-authenticated', 'sidebar-open');
     el.detailPanel.classList.remove('is-open');

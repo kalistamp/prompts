@@ -2973,6 +2973,19 @@ body.is-resizing .detail-panel {
     background: var(--danger-soft);
 }
 
+/* Retry on a failed turn. The only action on the screen that is a
+   way forward rather than a way to file something, so it does not
+   wait to be found by hovering the right row. */
+.turn-action.is-primary {
+    color: var(--primary-text);
+    border-color: var(--primary-edge);
+    background: var(--primary-soft);
+}
+
+.turn-action.is-primary:hover {
+    border-color: var(--primary);
+}
+
 @media (hover: hover) and (min-width: 700px) {
     .turn-assistant .turn-actions > * {
         opacity: 0;
@@ -2982,6 +2995,16 @@ body.is-resizing .detail-panel {
     .turn:hover .turn-actions > *,
     .turn:focus-within .turn-actions > *,
     .turn:last-child .turn-actions > * {
+        opacity: 1;
+    }
+
+    /* Reveal-on-hover is right for actions you take on an answer you
+       are already reading. It is wrong for a failure: the recovery
+       is the reason the turn is on screen at all, and hiding it
+       behind a hover is how the old build ended up offering no way
+       out of a failed run. Placed after the rule above so it wins on
+       equal specificity. */
+    .turn-failed .turn-actions > * {
         opacity: 1;
     }
 }
@@ -3706,6 +3729,21 @@ dialog.palette::backdrop {
 
 .settings-sweep { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 0.82rem; color: var(--fg-muted); }
 .settings-sweep .btn { margin-left: auto; }
+
+/* Where the API keys are kept, and the switch that decides. Boxed
+   rather than left inline with the provider fields: it governs all
+   nine of them, and reading as one more row of the form made it look
+   like a per-provider option. */
+.key-storage {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    margin-bottom: 8px;
+}
+
+.key-storage .checkbox-inline { color: var(--fg); font-weight: 600; }
+#key-storage-hint { margin-bottom: 12px; }
 
 .field-hint { margin-top: 7px; font-size: 0.77rem; color: var(--fg-muted); line-height: 1.5; }
 .field-hint code { font-family: var(--mono); background: var(--surface-sunken); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); }
