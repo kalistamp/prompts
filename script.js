@@ -3257,9 +3257,9 @@
         </span>
       </button>
       <div class="history-actions">
-        <button class="tool-btn" type="button" data-run-resume="${run.id}">Resume / Continue</button>
-        <button class="tool-btn" type="button" data-run-duplicate="${run.id}">Duplicate from here</button>
-        <button class="tool-btn" type="button" data-run-open="${run.id}">View history only</button>
+        <button class="btn btn-secondary history-action" type="button" data-run-resume="${run.id}">Resume / Continue</button>
+        <button class="btn btn-secondary history-action" type="button" data-run-duplicate="${run.id}">Duplicate from here</button>
+        <button class="btn btn-secondary history-action" type="button" data-run-open="${run.id}">View history only</button>
         ${count ? `<button class="repeat-badge" type="button" data-run-repeats="${run.id}" aria-expanded="${open}" title="${open ? 'Fold these back up' : 'This failed ' + (count + 1) + ' times in a row'}">×${count + 1} <i class="fas fa-chevron-${open ? 'up' : 'down'}"></i></button>` : ''}
         <button class="tool-btn${run.keep ? ' pinned' : ''}" data-run-keep="${run.id}" title="${run.keep ? 'Stop keeping' : 'Keep — never auto-delete'}" aria-pressed="${run.keep ? 'true' : 'false'}"><i class="${run.keep ? 'fas' : 'far'} fa-bookmark"></i></button>
         <button class="tool-btn danger" data-run-delete="${run.id}" title="Delete run"><i class="fas fa-trash"></i></button>

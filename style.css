@@ -3467,6 +3467,7 @@ body.is-resizing .detail-panel {
 
 .history-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: flex-start;
     gap: var(--s4);
     padding: var(--s4) var(--s5);
@@ -3556,7 +3557,27 @@ body.is-resizing .detail-panel {
     color: var(--fg-subtle);
 }
 
-.history-actions { display: flex; gap: 4px; }
+.history-actions {
+    display: flex;
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+/* Text actions occupy a separate row and size to their labels. Keep and
+   Delete retain their compact icon controls. */
+.history-action {
+    flex: 0 1 auto;
+    width: auto;
+    max-width: 100%;
+    min-height: 36px;
+    height: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 0.78rem;
+}
 
 .run-detail-scroll {
     overflow-y: auto;
@@ -4834,8 +4855,3 @@ dialog#reader-dialog {
 .workshop-session { padding: 1rem 0; border-bottom: 1px solid var(--border); }
 .workshop-session p { overflow-wrap: anywhere; }
 .workshop-session .btn { margin: .3rem .3rem .3rem 0; white-space: normal; }
-.history-actions { flex-wrap: wrap; }
-@media (max-width: 700px) {
-  .history-row { flex-wrap: wrap; }
-  .history-actions { width: 100%; justify-content: flex-start; }
-}
