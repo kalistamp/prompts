@@ -22,6 +22,13 @@
   const Runner = window.PromptRunner;
   const Settings = window.PromptSettings;
   const Diff = window.PromptDiff;
+  let recovery = null;
+  let recoveryTimer = null;
+  let recoverySyncTimer = null;
+  let recoveredMeta = null;
+  let recoveredMaxTokens = null;
+  let pendingTurn = null;
+  let recoveryStatus = '';
 
   // ─────────────────────────────────────────────
   // VIEW STATE
@@ -52,6 +59,7 @@
     // clock that turns a silent wait into a legible one.
     runPhase: 'idle',
     runStartedAt: 0,
+    runExpectedMs: 30000,
     elapsedTimer: null,
     // The meta-prompt picker, opened by "/" or by the composer chip.
     slashOpen: false,
@@ -1331,6 +1339,8 @@
      A real move is still available, deliberately: change the Section
      field in the prompt editor. */
   function copyToWorkshop(id) {
+    if (state.running) { showToast('Stop the current run first.'); return; }
+    if (!saveWorkshop()) { showToast('Could not save your Workshop draft. Copy it before switching.'); return; }
     const source = Cloud.getPrompts().find(p => p.id === id);
     if (!source) return;
 
@@ -1553,6 +1563,177 @@
   // WORKSHOP
   // ─────────────────────────────────────────────
 
+  function workshopSnapshot() {
+    const creds = Settings.readCredentials();
+    return {
+      draft: el.workshopInput.value,
+      selection: [el.workshopInput.selectionStart, el.workshopInput.selectionEnd],
+      meta: selectedMeta(), thread: state.thread, lastRun: state.lastRun,
+      options: { provider: creds.provider, models: creds.models, effort: creds.effort,
+        maxTokens: recoveredMaxTokens || Cloud.getSettings().defaultMaxTokens },
+      outputMode: state.outputMode, previewOpen: state.previewOpen, pendingTurn,
+      recoveryCopy: Boolean(recovery && recovery.current()?.snapshot.recoveryCopy)
+    };
+  }
+
+  function saveWorkshop() {
+    if (!recovery) return !state.thread && !el.workshopInput.value;
+    if (!state.thread && !el.workshopInput.value && !recovery.current()) return true;
+    return recovery.save(workshopSnapshot());
+  }
+
+  function updateRecoveryNotice() {
+    const button = $('workshop-recover-btn');
+    button.hidden = !recovery || !recovery.list().length;
+    button.textContent = 'Recover / browse previous work';
+    $('workshop-save-status').textContent = recoveryStatus;
+  }
+
+  function startRecovery(user) {
+    if (recovery) return;
+    let storage;
+    try { storage = localStorage; } catch (_) {
+      recoveryStatus = 'Autosave unavailable: browser storage is blocked. Copy your work before leaving.';
+      updateRecoveryNotice(); return;
+    }
+    recovery = window.WorkshopRecovery.createStore({
+      storage, client: Cloud.client, userId: user.id,
+      uuid: () => crypto.randomUUID(),
+      onStatus: message => { recoveryStatus = message; updateRecoveryNotice(); },
+      onChange: () => { updateRecoveryNotice(); if (state.section === 'history') renderRecoveryList(); }
+    });
+    recoveryStatus = recovery.list().length
+      ? 'Previous work is available. Choose Recover to continue; your draft will be preserved.'
+      : 'Workshop autosave ready';
+    updateRecoveryNotice();
+    recovery.sync();
+    recoverySyncTimer = setInterval(() => recovery && recovery.sync(), 10000);
+  }
+
+  function restoreWorkshop(row, duplicate = false, snapshot = null) {
+    if (!recovery) return;
+    if (state.running) { showToast('Stop the current run before opening another conversation.'); return; }
+    if (!saveWorkshop()) { showToast('Could not save your current work. Copy it before switching conversations.'); return; }
+    const saved = snapshot || row.snapshot;
+    const apply = () => {
+      const data = recovery.open({ ...row, snapshot: saved }, duplicate);
+      state.thread = data.thread || null;
+      state.lastRun = data.lastRun || null;
+      recoveredMeta = data.meta;
+      state.metaPromptId = data.meta ? data.meta.id : data.thread?.metaPromptId;
+      recoveredMaxTokens = data.options?.maxTokens || null;
+      if (data.options) Settings.writeCredentials(data.options);
+      el.workshopInput.value = data.draft || '';
+      pendingTurn = null;
+      if (data.pendingTurn && state.thread) {
+        const interrupted = data.pendingTurn;
+        // Preserve partial output visibly, but exclude it from model context.
+        state.thread.messages.push({ role: 'assistant', failed: true,
+          content: interrupted.partial || 'This request was interrupted before an answer was received.',
+          hint: 'Interrupted request. Partial output is not included in future model context. Retry to send it again.',
+          request: interrupted.request });
+      }
+      state.previewOpen = Boolean(data.previewOpen);
+      el.sendPreviewBody.hidden = !state.previewOpen;
+      el.composerPreviewChip.setAttribute('aria-expanded', String(state.previewOpen));
+      setOutputMode(data.outputMode || 'markdown');
+      setSection('workshop');
+      autoGrowComposer();
+      const selection = data.selection || [el.workshopInput.value.length, el.workshopInput.value.length];
+      el.workshopInput.setSelectionRange(selection[0], selection[1]);
+      el.workshopInput.focus();
+      saveWorkshop();
+      recovery.sync();
+      showToast(duplicate ? 'Independent conversation started.' : 'Conversation resumed.');
+    };
+    if (state.thread || el.workshopInput.value) {
+      confirmAction({ title: 'Open this conversation?',
+        description: 'Your current work is saved separately in Workshop history. You can recover it there at any time.',
+        confirmLabel: duplicate ? 'Duplicate and open' : 'Resume conversation', onConfirm: apply });
+    } else apply();
+  }
+
+  function renderRecoveryList() {
+    const container = $('workshop-sessions');
+    const rows = recovery ? recovery.list() : [];
+    container.innerHTML = '<h3>Workshop conversations & drafts</h3>';
+    if (!rows.length) {
+      container.insertAdjacentHTML('beforeend', '<p>New Workshop work is autosaved here. Older run receipts appear below.</p>');
+    }
+    rows.forEach(row => {
+      const item = document.createElement('div');
+      item.className = 'workshop-session';
+      const title = row.snapshot.meta?.title || row.snapshot.thread?.metaPromptTitle || 'Untitled draft';
+      const label = document.createElement('p');
+      label.textContent = `${title}${row.snapshot.recoveryCopy ? ' — recovery copy (concurrent edit)' : ''} · ${formatDateTime(row.updatedAt)} · ${row.dirty ? 'Local changes pending' : 'Cloud saved'}`;
+      item.appendChild(label);
+      const actions = [
+        ['Resume conversation', () => restoreWorkshop(row)],
+        ['Duplicate / start from this point', () => restoreWorkshop(row, true)],
+        ['View history only', () => {
+          el.runDialogTitle.textContent = title;
+          el.runDetailBody.innerHTML = '';
+          const pre = document.createElement('pre');
+          pre.textContent = [row.snapshot.thread?.system || '',
+            ...(row.snapshot.thread?.messages || []).map(m => `${m.role}: ${m.content}`),
+            `Draft: ${row.snapshot.draft || ''}`,
+            row.snapshot.pendingTurn ? `Interrupted output: ${row.snapshot.pendingTurn.partial}` : ''].join('\n\n');
+          el.runDetailBody.appendChild(pre);
+          el.runCopyInput.onclick = () => copyText(row.snapshot.draft || '', 'Draft copied.');
+          el.runCopyOutput.disabled = true;
+          openDialog(el.runDialog);
+        }]
+      ];
+      actions.forEach(([text, action]) => {
+        const button = document.createElement('button');
+        button.type = 'button'; button.className = 'btn btn-secondary';
+        button.textContent = text; button.onclick = action; item.appendChild(button);
+      });
+      container.appendChild(item);
+    });
+  }
+
+  function openRunSession(id, duplicate) {
+    const rows = recovery ? recovery.list() : [];
+    const row = rows.find(r => r.snapshot.thread?.messages.some(m => m.run?.id === id));
+    if (row) {
+      if (!duplicate) { restoreWorkshop(row); return; }
+      const snapshot = JSON.parse(JSON.stringify(row.snapshot));
+      const index = snapshot.thread.messages.findIndex(m => m.run?.id === id);
+      snapshot.thread.messages = snapshot.thread.messages.slice(0, index + 1);
+      snapshot.draft = ''; snapshot.pendingTurn = null;
+      snapshot.lastRun = snapshot.thread.messages[index].run;
+      restoreWorkshop(row, true, snapshot);
+      return;
+    }
+    const run = Cloud.getRuns().find(r => r.id === id);
+    if (!run) return;
+    if (!duplicate) {
+      showToast('This older receipt has no saved conversation context. View it or use Duplicate from here.');
+      return;
+    }
+    const meta = Cloud.getPrompts().find(p => p.id === run.metaPromptId);
+    const snapshot = { draft: run.output || run.input, meta: meta || null, thread: null, lastRun: null };
+    restoreWorkshop({ snapshot }, true);
+  }
+
+  $('workshop-recover-btn').addEventListener('click', () => { saveWorkshop(); setSection('history'); });
+  // A bounded checkpoint catches continuous typing, settings, and streamed
+  // output. No write occurs when the snapshot has not changed.
+  setInterval(saveWorkshop, 1000);
+  window.addEventListener('pagehide', saveWorkshop);
+  document.addEventListener('visibilitychange', () => {
+    saveWorkshop();
+    if (recovery) recovery.sync();
+  });
+  window.addEventListener('online', () => recovery && recovery.sync());
+  window.addEventListener('storage', event => {
+    if (event.key?.startsWith('ps.workshop.v1:')) {
+      updateRecoveryNotice();
+      if (state.section === 'history') renderRecoveryList();
+    }
+  });
+
   function metaPrompts() {
     return Cloud.getPrompts()
       .filter(p => p.section === 'workshop')
@@ -1560,6 +1741,7 @@
   }
 
   function selectedMeta() {
+    if (recoveredMeta && recoveredMeta.id === state.metaPromptId) return recoveredMeta;
     return Cloud.getPrompts().find(p => p.id === state.metaPromptId) || null;
   }
 
@@ -1572,7 +1754,7 @@
     el.viewTitle.textContent = 'Workshop';
     el.resultCount.textContent = list.length;
 
-    if (state.metaPromptId && !list.some(p => p.id === state.metaPromptId)) {
+    if (state.metaPromptId && !list.some(p => p.id === state.metaPromptId) && !recoveredMeta) {
       state.metaPromptId = null;
     }
     if (!state.metaPromptId && list.length) state.metaPromptId = list[0].id;
@@ -1688,12 +1870,14 @@
   }
 
   function chooseMeta(id) {
+    if (state.running) { showToast('Stop the current run first.'); return; }
     const next = Number(id);
     // A thread system message belongs to the meta-prompt that started
     // it; carrying it onto a different one would answer under rules
     // the new prompt never set.
-    if (state.thread && state.thread.metaPromptId !== next) endThread();
+    if (state.thread && state.thread.metaPromptId !== next && endThread() === false) return;
     state.metaPromptId = next;
+    recoveredMeta = null;
     closeSlashMenu();
     // "/" typed to open the picker is a command, not content.
     if (el.workshopInput.value.trim() === '/') el.workshopInput.value = '';
@@ -1776,7 +1960,7 @@
      recorded run in History is 28.8s. All the app used to show for
      that was the word "Running…" in a caption, which is the same
      thing a hung request looks like. Now it shows a live clock, a
-     breathing orb, and a label that moves with the clock, so a slow
+     percentage track, and a label that moves with the clock, so a slow
      answer is legibly different from a broken one. */
   /* Run state, spoken.
 
@@ -1811,6 +1995,10 @@
   function startElapsed() {
     if (state.elapsedTimer) return;
     state.runStartedAt = Date.now();
+    const provider = Settings.readCredentials().provider;
+    const durations = Cloud.getRuns().filter(run => run.status === 'ok' && run.provider === provider && run.durationMs > 0)
+      .sort((a, b) => b.createdAt - a.createdAt).slice(0, 20).map(run => run.durationMs).sort((a, b) => a - b);
+    state.runExpectedMs = durations.length ? Math.max(5000, durations[Math.floor(durations.length / 2)]) : 30000;
     state.elapsedTimer = setInterval(paintElapsed, 100);
     paintElapsed();
   }
@@ -1848,6 +2036,7 @@
      exchange, and a rebuild mid-stream loses the caret position and
      the scroll. */
   function paintElapsed() {
+    paintRunProgress();
     const chip = el.workshopThread.querySelector('.run-state');
     if (!chip) return;
 
@@ -1863,6 +2052,25 @@
     const rung = WAIT_LADDER.find(([at]) => seconds >= at)[1];
     // Ten times a second, so only write when it actually changed.
     if (label && label.textContent !== rung) label.textContent = rung;
+  }
+
+  // Providers expose tokens, not a known total. This is explicitly an
+  // estimate; it never loops or claims completion before the request succeeds.
+  function paintRunProgress(complete = false) {
+    const progress = document.getElementById('live-progress');
+    if (!progress || (document.hidden && !complete)) return;
+    const elapsed = Math.max(0, Date.now() - state.runStartedAt);
+    const percent = complete ? 100 : Math.min(95, Math.floor(95 * (1 - Math.exp(-elapsed / state.runExpectedMs))));
+    if (progress.dataset.percent === String(percent) && progress.dataset.phase === state.runPhase) return;
+    progress.dataset.percent = String(percent);
+    progress.dataset.phase = state.runPhase;
+    const track = progress.querySelector('[role="progressbar"]');
+    track.setAttribute('aria-valuenow', String(percent));
+    track.setAttribute('aria-valuetext', complete ? 'Response complete' : `Estimated progress: ${percent} percent`);
+    progress.querySelector('.neu-pct-value').textContent = percent;
+    progress.querySelector('.neu-fill').style.width = `${percent}%`;
+    progress.querySelector('.neu-label').textContent = complete ? 'COMPLETE'
+      : state.runPhase === 'streaming' ? 'GENERATING RESPONSE' : 'LOADING';
   }
 
   function updateRunControls() {
@@ -2144,6 +2352,10 @@
   }
 
   function endThread() {
+    if (!saveWorkshop()) { showToast('Could not save this conversation. Copy your work before clearing.'); return false; }
+    if (recovery) recovery.reset();
+    recoveredMeta = null;
+    recoveredMaxTokens = null;
     state.thread = null;
     state.lastRun = null;
     renderThread();
@@ -2344,8 +2556,7 @@
     scrollThread();
   }
 
-  /* The turn being generated. Until the first token arrives it is an
-     orb, because "waiting" and "empty" have to look different. */
+  /* The supplied neumorphic track stays visible through streaming. */
   function buildLiveTurn() {
     const block = turnEl('turn turn-assistant');
     const head = turnEl('turn-head');
@@ -2357,10 +2568,17 @@
     block.appendChild(head);
 
     const body = turnEl('turn-body');
-    const orb = turnEl('thinking-orb');
-    orb.id = 'live-orb';
-    orb.appendChild(turnEl('orb-core'));
-    body.appendChild(orb);
+    const progress = turnEl('workshop-progress');
+    progress.id = 'live-progress';
+    progress.innerHTML = `
+      <div class="neu-pct" aria-hidden="true"><span class="neu-pct-value">0</span><span class="neu-pct-unit">%</span></div>
+      <div class="neu-track-outer" role="progressbar" aria-label="Estimated response progress"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="Estimated progress: 0 percent">
+        <div class="neu-fill"></div>
+      </div>
+      <div class="neu-label">LOADING</div>
+      <div class="neu-note">Estimated progress</div>`;
+    body.appendChild(progress);
 
     const text = turnEl('turn-text is-streaming');
     text.id = 'live-turn';
@@ -2478,7 +2696,11 @@
   function snapshotRequest(thread, meta, isRefine, typed) {
     return {
       system: thread.system,
-      messages: thread.messages.map(turn => ({ ...turn })),
+      // Keep one level of request metadata, avoiding exponentially nested
+      // snapshots of the same earlier messages on long conversations.
+      messages: thread.messages.map(turn => ({ ...turn, request: turn.request ? {
+        ...turn.request, messages: turn.request.messages.map(({ request: nested, ...message }) => message)
+      } : undefined })),
       metaPromptId: meta.id,
       metaPromptTitle: meta.title,
       isRefine,
@@ -2527,8 +2749,11 @@
    * request rather than reading the composer.
    */
   async function executeTurn({ thread, meta, isRefine, typed }) {
+    const owner = Cloud.getUser()?.id;
     const creds = Settings.readCredentials();
     const request = snapshotRequest(thread, meta, isRefine, typed);
+    pendingTurn = { request, partial: '' };
+    saveWorkshop();
 
     /* The exchange this run belongs to is held by reference for the
        rest of the function. A run is awaited, and the thread can be
@@ -2549,7 +2774,7 @@
     renderWorkshopChrome();
 
     const live = document.getElementById('live-turn');
-    const orb = document.getElementById('live-orb');
+    paintRunProgress();
     state.abortController = new AbortController();
     const startedAt = Date.now();
     let receipt = null;
@@ -2560,15 +2785,16 @@
       receipt = await Runner.run({
         system: thread.system,
         messages: wireMessages(thread.messages),
-        maxTokens: Cloud.getSettings().defaultMaxTokens,
+        maxTokens: recoveredMaxTokens || Cloud.getSettings().defaultMaxTokens,
         signal: state.abortController.signal,
         onDelta: chunk => {
+          if (pendingTurn) pendingTurn.partial += chunk;
           if (!live) return;
           if (!sawDelta) {
-            // The first token: the orb has served its purpose.
+            // The response appears below the progress track as it arrives.
             sawDelta = true;
             state.runPhase = 'streaming';
-            if (orb) orb.remove();
+            paintRunProgress();
             live.hidden = false;
             const chip = el.workshopThread.querySelector('.run-state');
             if (chip) {
@@ -2581,14 +2807,18 @@
           scrollThread();
         }
       });
+      if (Cloud.getUser()?.id === owner && state.thread === thread) paintRunProgress(true);
     } catch (error) {
       failure = error;
     } finally {
-      setRunPhase('idle');
-      state.abortController = null;
+      if (Cloud.getUser()?.id === owner && state.thread === thread) {
+        setRunPhase('idle');
+        state.abortController = null;
+      }
     }
 
     const aborted = failure && failure.name === 'AbortError';
+    if (Cloud.getUser()?.id !== owner || state.thread !== thread) return;
 
     /* The blockquote a model wraps its answer in is taken off once,
        here, before the text becomes anything else. Everything
@@ -2596,6 +2826,8 @@
        row, the reader — then sees the same text, because they all
        read this one. See stripWrapperQuote for the rule. */
     const answer = receipt ? stripWrapperQuote(receipt.text) : '';
+    const partial = pendingTurn?.partial || '';
+    pendingTurn = null;
 
     if (receipt) {
       thread.messages.push({ role: 'assistant', content: answer, request });
@@ -2609,13 +2841,17 @@
       // cleared on send and they are otherwise gone. Only if the
       // exchange is still the one on screen — pushing them back into
       // a composer the user has since cleared would undo the clear.
-      if (state.thread === thread) {
+      if (state.thread === thread && !el.workshopInput.value) {
         el.workshopInput.value = typed;
         autoGrowComposer();
       }
     }
 
     if (aborted) {
+      thread.messages.push({ role: 'assistant', failed: true,
+        content: partial || 'Run stopped before an answer was received.',
+        hint: 'Interrupted output is excluded from future model context.', request });
+      saveWorkshop();
       renderThread();
       announce('Run stopped.');
       showToast('Run stopped.');
@@ -2646,10 +2882,15 @@
       savedPromptId: null,
       createdAt: Date.now()
     };
+    // Persist the answer before awaiting the separate receipt write.
+    saveWorkshop();
 
     try {
-      state.lastRun = await Cloud.saveRun(record);
+      const savedRun = await Cloud.saveRun(record);
+      if (Cloud.getUser()?.id !== owner || state.thread !== thread) return;
+      state.lastRun = savedRun;
     } catch (error) {
+      if (Cloud.getUser()?.id !== owner || state.thread !== thread) return;
       console.error('[ui] could not record the run', error);
       state.lastRun = record;
       showToast('The run finished but could not be saved to History.');
@@ -2670,8 +2911,8 @@
       thread.messages.push({
         role: 'assistant',
         failed: true,
-        content: failure ? (failure.message || 'The run failed.') : 'The run failed.',
-        hint: failure && failure.hint ? failure.hint : '',
+        content: partial || (failure ? (failure.message || 'The run failed.') : 'The run failed.'),
+        hint: partial ? `Interrupted output. ${failure?.message || ''}` : (failure && failure.hint ? failure.hint : ''),
         run: state.lastRun,
         request
       });
@@ -2687,6 +2928,7 @@
     renderThread();
     scrollThread(true);
     renderWorkshopChrome();
+    saveWorkshop();
     render();
   }
 
@@ -2898,6 +3140,7 @@
   }
 
   function renderHistory() {
+    renderRecoveryList();
     const list = filteredRuns();
     el.viewTitle.textContent = 'History';
     el.resultCount.textContent = list.length;
@@ -3014,6 +3257,9 @@
         </span>
       </button>
       <div class="history-actions">
+        <button class="tool-btn" type="button" data-run-resume="${run.id}">Resume / Continue</button>
+        <button class="tool-btn" type="button" data-run-duplicate="${run.id}">Duplicate from here</button>
+        <button class="tool-btn" type="button" data-run-open="${run.id}">View history only</button>
         ${count ? `<button class="repeat-badge" type="button" data-run-repeats="${run.id}" aria-expanded="${open}" title="${open ? 'Fold these back up' : 'This failed ' + (count + 1) + ' times in a row'}">×${count + 1} <i class="fas fa-chevron-${open ? 'up' : 'down'}"></i></button>` : ''}
         <button class="tool-btn${run.keep ? ' pinned' : ''}" data-run-keep="${run.id}" title="${run.keep ? 'Stop keeping' : 'Keep — never auto-delete'}" aria-pressed="${run.keep ? 'true' : 'false'}"><i class="${run.keep ? 'fas' : 'far'} fa-bookmark"></i></button>
         <button class="tool-btn danger" data-run-delete="${run.id}" title="Delete run"><i class="fas fa-trash"></i></button>
@@ -3269,7 +3515,7 @@
     el.settingsProvider.value = creds.provider;
     el.settingsEffort.value = creds.effort;
     renderKeyStorage(creds, cloudSettings);
-    el.settingsMaxTokens.value = cloudSettings.defaultMaxTokens;
+    el.settingsMaxTokens.value = recoveredMaxTokens || cloudSettings.defaultMaxTokens;
     el.settingsScratchDays.value = cloudSettings.scratchRetentionDays === null
       ? '' : String(cloudSettings.scratchRetentionDays);
     el.settingsRunsDays.value = cloudSettings.runsRetentionDays === null
@@ -3921,6 +4167,8 @@
   });
 
   el.workshopInput.addEventListener('input', () => {
+    clearTimeout(recoveryTimer);
+    recoveryTimer = setTimeout(saveWorkshop, 250);
     autoGrowComposer();
     renderSendPreview();
     updateRunControls();
@@ -3985,10 +4233,11 @@
   });
 
   el.workshopClearBtn.addEventListener('click', () => {
+    if (state.running) { showToast('Stop the current run first.'); return; }
+    if (endThread() === false) return;
     el.workshopInput.value = '';
     autoGrowComposer();
     closeSlashMenu();
-    endThread();
     renderWorkshop();
     el.workshopInput.focus();
   });
@@ -4109,6 +4358,12 @@
   });
 
   el.historyList.addEventListener('click', event => {
+    const resume = event.target.closest('[data-run-resume]');
+    const duplicate = event.target.closest('[data-run-duplicate]');
+    if (resume || duplicate) {
+      openRunSession(Number(resume ? resume.dataset.runResume : duplicate.dataset.runDuplicate), Boolean(duplicate));
+      return;
+    }
     const open = event.target.closest('[data-run-open]');
     const keep = event.target.closest('[data-run-keep]');
     const remove = event.target.closest('[data-run-delete]');
@@ -4303,6 +4558,7 @@
   });
 
   function saveCloudSettings() {
+    recoveredMaxTokens = Number(el.settingsMaxTokens.value) || 16000;
     const patch = {
       defaultMaxTokens: Number(el.settingsMaxTokens.value) || 16000,
       scratchRetentionDays: el.settingsScratchDays.value === '' ? null : Number(el.settingsScratchDays.value),
@@ -4498,6 +4754,7 @@
     el.accountEmail.textContent = user.email || user.id;
 
     await Cloud.startSession(user);
+    startRecovery(user);
     setSection(prefs.section === 'history' ? 'history' : prefs.section);
 
     // Load-time sweep. Nothing pinned or marked Keep is touched, and
@@ -4516,6 +4773,20 @@
   }
 
   function endSession() {
+    saveWorkshop();
+    if (state.abortController) state.abortController.abort();
+    setRunPhase('idle');
+    state.abortController = null;
+    if (recovery) recovery.stop();
+    recovery = null;
+    clearInterval(recoverySyncTimer);
+    clearTimeout(recoveryTimer);
+    state.thread = null;
+    state.lastRun = null;
+    pendingTurn = null;
+    recoveredMeta = null;
+    recoveredMaxTokens = null;
+    el.workshopInput.value = '';
     // The next sign-in gets its own pull, and may be a different
     // account. Leaving this latched would hand them this one's row.
     credentialsHydrated = false;

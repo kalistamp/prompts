@@ -2164,21 +2164,6 @@ body.is-dragging {
     to   { opacity: 1; transform: none; }
 }
 
-/* The orb, breathing. Scale and opacity only, so it composites off
-   the main thread and costs a streaming run nothing. */
-@keyframes orb-breathe {
-    0%, 100% { transform: scale(0.82); opacity: 0.7; }
-    50%      { transform: scale(1);    opacity: 1; }
-}
-
-/* A ring leaving the orb. It fades well before it reaches full size,
-   so the edge dissolves rather than stopping. */
-@keyframes orb-ripple {
-    0%   { transform: scale(0.9); opacity: 0.5; }
-    70%  { opacity: 0; }
-    100% { transform: scale(3);   opacity: 0; }
-}
-
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
@@ -3088,63 +3073,45 @@ body.is-resizing .detail-panel {
     animation: check-draw var(--dur-3) var(--ease-spring) both;
 }
 
-/* ---- Waiting, when nothing is streaming yet ------------------ */
-/* THE ORB — the shape of a wait.
-
-   This replaced three shimmering skeleton bars. A skeleton is a
-   promise about layout: it says "three lines of text are coming,
-   roughly this wide". That is a good lie for a list of rows whose
-   shape is known, and a bad one here, where the answer may be one
-   sentence or two thousand words.
-
-   Eight of the nine providers do not stream, so for most runs this
-   is the entire wait — the code comment above runWorkshop records a
-   28.8s worst case. It has to hold up under a thirty-second stare,
-   which a bar that fills and resets does not: a repeating progress
-   shape keeps implying progress it cannot measure. A breathing orb
-   claims nothing except that something is alive.
-
-   Two elements, where the skeleton used three. The core is the
-   child; the two rings leaving it are its pseudo-elements. */
-.thinking-orb {
-    min-height: 86px;
-    display: grid;
-    place-items: center;
+/* Neumorphic progress track, adapted from the supplied reference. */
+.workshop-progress {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    width: min(72%, 280px);
+    margin: 28px auto;
+    color: var(--fg-muted);
 }
-
-/* The resting state is the whole appearance, deliberately. The
-   reduced-motion block near the top of this sheet flattens every
-   animation to 0.01ms with no fill, so an element whose looks live
-   only in its keyframes disappears for those users. Painted here,
-   it degrades to a still, centred dot — and the clock in the chip
-   beside it goes on ticking, because that is JS and not motion. */
-.orb-core {
-    position: relative;
-    width: 17px;
-    height: 17px;
-    border-radius: 50%;
-    background: var(--primary);
-    box-shadow: 0 0 22px var(--primary-glow);
-    animation: orb-breathe 2600ms var(--ease-in-out) infinite;
+.neu-pct {
+    font: 300 38px/1 system-ui, -apple-system, sans-serif;
+    letter-spacing: -1px;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg);
 }
-
-.orb-core::before,
-.orb-core::after {
-    content: "";
-    position: absolute;
-    inset: -1px;
-    border-radius: 50%;
-    border: 2px solid var(--primary-ring);
-    /* Invisible at rest: the rings are the part that is purely
-       motion, so under reduced motion they correctly vanish. */
-    opacity: 0;
-    animation: orb-ripple 2600ms var(--ease-out) infinite;
+.neu-pct-unit { font-size: 18px; vertical-align: super; margin-left: 2px; }
+.neu-track-outer {
+    width: 100%;
+    height: 18px;
+    border-radius: 9px;
+    background: var(--surface-2);
+    box-shadow: inset 3px 3px 8px color-mix(in srgb, var(--fg) 18%, transparent),
+                inset -3px -3px 8px color-mix(in srgb, var(--surface) 85%, white);
+    overflow: hidden;
 }
-
-/* Half a cycle apart, so a ring leaves every 1.3s rather than two
-   arriving together and then a long gap. */
-.orb-core::after { animation-delay: 1300ms; }
-
+.neu-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #5c6670, #75894d);
+    box-shadow: 2px 0 8px rgb(92 102 112 / 35%);
+    transition: width 100ms linear;
+}
+.neu-label { font: 600 10px/1 system-ui, sans-serif; letter-spacing: 2px; }
+.neu-note { font-size: 11px; margin-top: -6px; }
+@media (prefers-reduced-motion: reduce) {
+    .neu-fill { transition: none; }
+}
 /* ---- The composer ------------------------------------------- */
 .composer {
     flex: none;
@@ -4861,4 +4828,14 @@ dialog#reader-dialog {
 @media (max-width: 699px) {
     /* No hardware keyboard to hint at. */
     .btn-kbd { display: none; }
+}
+/* Recovery actions wrap instead of overflowing a phone's History column. */
+.workshop-recovery-bar { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; padding: .75rem 1rem; font-size: .85rem; }
+.workshop-session { padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.workshop-session p { overflow-wrap: anywhere; }
+.workshop-session .btn { margin: .3rem .3rem .3rem 0; white-space: normal; }
+.history-actions { flex-wrap: wrap; }
+@media (max-width: 700px) {
+  .history-row { flex-wrap: wrap; }
+  .history-actions { width: 100%; justify-content: flex-start; }
 }

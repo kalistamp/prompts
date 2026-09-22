@@ -9,7 +9,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha384-t8rSa+36qiqcFveW4hEFK03sZPBpGB+h0ivAGPosMEkKTam36UfKqm2+aBaf3pU6' https://cdn.jsdelivr.net; style-src 'self'; font-src 'none'; connect-src 'self' https://baiojghilzxhkebfblzv.supabase.co wss://baiojghilzxhkebfblzv.supabase.co https://api.anthropic.com https://api.openai.com https://generativelanguage.googleapis.com https://api.groq.com https://api.cerebras.ai https://openrouter.ai https://api.mistral.ai https://api.cohere.com https://router.huggingface.co; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self'; upgrade-insecure-requests">
     <title>Prompt Studio</title>
     <script>(function(){try{var p=JSON.parse(localStorage.getItem('ps.prefs.v1')||'{}');document.documentElement.setAttribute('data-theme',p.theme==='light'?'light':'dark')}catch(e){}})();</script>
-    <link rel="stylesheet" href="style.css?v=12">
+    <link rel="stylesheet" href="style.css?v=14">
 </head>
 <body>
     <!-- ── AUTH ─────────────────────────────────────────────── -->
@@ -212,6 +212,10 @@
                          first. A run is a conversation, so it is laid out
                          as one. -->
                     <section class="view view-workshop" id="view-workshop" data-view="workshop" hidden>
+                        <div class="workshop-recovery-bar">
+                            <span id="workshop-save-status" role="status">Workshop autosave ready</span>
+                            <button class="btn btn-secondary" type="button" id="workshop-recover-btn" hidden>Recover previous work</button>
+                        </div>
                         <div class="run-surface">
                             <div class="thread-scroll" id="thread-scroll">
                                 <div class="thread" id="workshop-thread"></div>
@@ -310,6 +314,7 @@
                         </div>
 
                         <div class="history-body">
+                            <div id="workshop-sessions" aria-label="Workshop conversations"></div>
                             <div class="filter-chips" id="history-filter-chips" hidden></div>
                             <div id="history-list" class="history-list"></div>
                         </div>
@@ -652,6 +657,7 @@
     <script src="./diff.js?v=12"></script>
     <script src="./markdown.js?v=12"></script>
     <script src="./runner.js?v=12"></script>
-    <script src="./script.js?v=12"></script>
+    <script src="./workshop.js?v=1"></script>
+    <script src="./script.js?v=14"></script>
 </body>
 </html>
