@@ -3711,6 +3711,8 @@ dialog.palette::backdrop {
 .provider-row-fields { display: flex; gap: 8px; flex-wrap: wrap; }
 .provider-row-fields input { flex: 2 1 200px; min-width: 0; }
 .provider-row-fields select { flex: 1 1 160px; min-width: 0; }
+.model-filter { display: block; width: 100%; margin-top: 8px; }
+.model-filter[hidden], .model-chip[hidden] { display: none; }
 .provider-test-note { margin-top: 8px; font-size: 0.76rem; color: var(--fg-muted); }
 .provider-test-note.is-error { color: var(--danger); }
 .provider-test-note.is-ok { color: var(--success); }

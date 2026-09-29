@@ -3551,6 +3551,8 @@
         <label class="sr-only" for="model-${id}">${escapeHtml(meta.label)} model</label>
         <select id="model-${id}" data-model-input="${id}"></select>
       </div>
+      <label class="sr-only" for="filter-${id}">Filter ${escapeHtml(meta.label)} models</label>
+      <input type="search" class="model-filter" id="filter-${id}" data-model-filter="${id}" placeholder="Filter models — type part of a name, e.g. groq llama" autocomplete="off" spellcheck="false" hidden>
       <p class="provider-test-note" data-test-note="${id}"></p>
       <div class="provider-models" data-models="${id}" hidden></div>
       ${configured.length ? `<p class="provider-stored">Keys also stored for ${escapeHtml(configured.join(', '))}.</p>` : ''}`;
@@ -3591,6 +3593,24 @@
       : 'This device only. Clearing site data, or opening the app in another browser, means pasting the key in again.';
   }
 
+  /* Gateways like OpenRouter and OmniRoute list hundreds of models,
+     so past this many the row grows a filter box. Every space-separated
+     word has to appear somewhere in the name, so "groq llama" finds
+     groq/llama-3.3-70b without the exact spelling. */
+  const MODEL_FILTER_MIN = 10;
+
+  function modelFilterTerms(providerId) {
+    const filter = el.providerRows.querySelector(`[data-model-filter="${providerId}"]`);
+    return filter && !filter.hidden
+      ? filter.value.toLowerCase().split(/\s+/).filter(Boolean)
+      : [];
+  }
+
+  function matchesModelFilter(model, terms) {
+    const name = model.toLowerCase();
+    return terms.every(term => name.includes(term));
+  }
+
   function populateModelSelect(providerId, creds) {
     const select = el.providerRows.querySelector(`[data-model-input="${providerId}"]`);
     if (!select) return;
@@ -3598,16 +3618,29 @@
     const cached = Settings.readModelCatalog(providerId, creds.keys[providerId]);
     const chosen = creds.models[providerId];
 
+    const filter = el.providerRows.querySelector(`[data-model-filter="${providerId}"]`);
+    if (filter) filter.hidden = !cached || cached.models.length < MODEL_FILTER_MIN;
+    const terms = modelFilterTerms(providerId);
+
     select.innerHTML = '';
     const auto = document.createElement('option');
     auto.value = '';
     auto.textContent = `Default (${meta.defaultModel})`;
     select.appendChild(auto);
 
-    const models = cached ? cached.models : [];
+    // The chosen model survives the filter: a select cannot show a
+    // value it has no option for, and saving would silently drop it.
+    const models = (cached ? cached.models : [])
+      .filter(model => model === chosen || matchesModelFilter(model, terms));
     // A pinned model that the live list no longer contains still has
     // to be selectable, or saving Settings would silently change it.
     if (chosen && !models.includes(chosen)) models.unshift(chosen);
+    if (terms.length && !models.some(model => model !== chosen)) {
+      const none = document.createElement('option');
+      none.disabled = true;
+      none.textContent = 'No models match the filter';
+      select.appendChild(none);
+    }
     models.forEach(model => {
       const option = document.createElement('option');
       option.value = model;
@@ -3615,6 +3648,10 @@
       select.appendChild(option);
     });
     select.value = chosen;
+
+    el.providerRows.querySelectorAll(`[data-pick-provider="${providerId}"]`).forEach(chip => {
+      chip.hidden = !matchesModelFilter(chip.dataset.pickModel, terms);
+    });
   }
 
   function collectCredentials() {
@@ -4485,6 +4522,13 @@
       if (eventName === 'change' && keyInput) populateModelSelect(keyInput.dataset.keyInput, creds);
       renderWorkshop();
     });
+  });
+
+  // Typing in the filter narrows the dropdown and the chip list. It is
+  // not a credential, so it stays out of collectCredentials above.
+  el.providerRows.addEventListener('input', event => {
+    const filter = event.target.closest('[data-model-filter]');
+    if (filter) populateModelSelect(filter.dataset.modelFilter, Settings.readCredentials());
   });
 
   // Clicking a listed model pins it, so the list doubles as the picker.
