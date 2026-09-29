@@ -71,7 +71,13 @@
     openrouter:  { streams: false },
     mistral:     { streams: false },
     cohere:      { streams: false },
-    huggingface: { streams: false }
+    huggingface: { streams: false },
+    deepseek:    { streams: false },
+    aihubmix:    { streams: false },
+    orcarouter:  { streams: false },
+    routeway:    { streams: false },
+    bedrock:     { streams: false },
+    omniroute:   { streams: false }
   });
 
   /* Models that rejected `thinking` or `output_config` are recorded
@@ -484,7 +490,7 @@
   // OPENAI-COMPATIBLE GATEWAYS  (single-shot)
   // ─────────────────────────────────────────────
 
-  /* Five providers speak OpenAI's /chat/completions verbatim, so one
+  /* Eleven providers speak OpenAI's /chat/completions verbatim, so one
      adapter serves them all and each entry is only what differs: the
      base URL and how that vendor lists its models. Kept apart from
      the `openai` adapter above on purpose — that one talks to
@@ -494,7 +500,17 @@
     cerebras:    { base: 'https://api.cerebras.ai/v1' },
     openrouter:  { base: 'https://openrouter.ai/api/v1' },
     mistral:     { base: 'https://api.mistral.ai/v1', listUsesCapabilities: true },
-    huggingface: { base: 'https://router.huggingface.co/v1' }
+    huggingface: { base: 'https://router.huggingface.co/v1' },
+    deepseek:    { base: 'https://api.deepseek.com/v1' },
+    aihubmix:    { base: 'https://aihubmix.com/v1' },
+    orcarouter:  { base: 'https://api.orcarouter.ai/v1' },
+    routeway:    { base: 'https://api.routeway.ai/v1' },
+    // bedrock-runtime has no GET /models, so its picker is a fixed list.
+    bedrock:     {
+      base: 'https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1',
+      fixedModels: ['openai.gpt-oss-120b-1:0', 'openai.gpt-oss-20b-1:0']
+    },
+    omniroute:   { base: 'http://localhost:20128/v1' }
   };
 
   // Non-chat endpoints, keyed on the job rather than the family name,
@@ -537,6 +553,7 @@
   function gatewayModels(providerId) {
     const gateway = GATEWAYS[providerId];
     return async function models(apiKey, signal) {
+      if (gateway.fixedModels) return gateway.fixedModels.slice();
       const response = await fetch(`${gateway.base}/models`, {
         headers: { Authorization: `Bearer ${apiKey}` }, signal
       });

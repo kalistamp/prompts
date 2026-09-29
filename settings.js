@@ -100,7 +100,7 @@
      provider returns for the entered key, so it reflects what the
      key can actually reach rather than what this file was written
      believing. */
-  /* The nine providers that are reachable straight from a browser.
+  /* The fifteen providers that are reachable straight from a browser.
      Defaults and key URLs match the ones already in use in sc, so a
      key that works there works here without being re-chosen.
 
@@ -173,6 +173,52 @@
       defaultModel: 'openai/gpt-oss-120b',
       placeholder: 'hf_…',
       keysUrl: 'https://huggingface.co/settings/tokens',
+      supportsEffort: false
+    },
+    deepseek: {
+      label: 'DeepSeek',
+      defaultModel: 'deepseek-chat',
+      placeholder: 'sk-…',
+      keysUrl: 'https://platform.deepseek.com/api_keys',
+      supportsEffort: false
+    },
+    aihubmix: {
+      label: 'AI Hub Mix',
+      defaultModel: 'gpt-4.1-mini',
+      placeholder: 'sk-…',
+      keysUrl: 'https://aihubmix.com/token',
+      supportsEffort: false
+    },
+    orcarouter: {
+      label: 'OrcaRouter',
+      defaultModel: 'openai/gpt-4o-mini',
+      placeholder: 'sk-orca-…',
+      keysUrl: 'https://www.orcarouter.ai/',
+      supportsEffort: false
+    },
+    routeway: {
+      label: 'Routeway',
+      defaultModel: 'gpt-4.1-mini',
+      placeholder: 'API key',
+      keysUrl: 'https://routeway.ai/',
+      supportsEffort: false
+    },
+    bedrock: {
+      label: 'Amazon Bedrock API',
+      defaultModel: 'openai.gpt-oss-120b-1:0',
+      placeholder: 'Bedrock API key',
+      keysUrl: 'https://console.aws.amazon.com/bedrock/home#/api-keys',
+      supportsEffort: false
+    },
+    /* OmniRoute is self-hosted, so this is its default local address
+       rather than a vendor's cloud. Its /v1 surface answers CORS for
+       any origin once a Bearer key is sent, so create a key in the
+       OmniRoute dashboard. */
+    omniroute: {
+      label: 'OmniRoute (local)',
+      defaultModel: 'auto',
+      placeholder: 'OmniRoute API key',
+      keysUrl: 'http://localhost:20128/',
       supportsEffort: false
     }
   });

@@ -3011,7 +3011,7 @@ body.is-resizing .detail-panel {
 /* ---- Run state ---------------------------------------------- */
 /* Six states, one vocabulary, used identically here and in History.
    Before this the only in-flight feedback anywhere was the word
-   "Running…" in a caption — and only ONE of the nine providers
+   "Running…" in a caption — and only ONE of the fifteen providers
    streams, so for the other eight the pane sat blank and motionless
    for as long as the call took. The longest recorded run was 28.8s. */
 .run-state {

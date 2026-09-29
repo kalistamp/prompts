@@ -1954,7 +1954,7 @@
 
      idle → thinking → (streaming) → idle.
 
-     "thinking" exists because eight of the nine providers do not
+     "thinking" exists because fourteen of the fifteen providers do not
      stream: runner.js marks only Anthropic `streams: true`, so for
      everything else the whole call is one silent wait. The longest
      recorded run in History is 28.8s. All the app used to show for
